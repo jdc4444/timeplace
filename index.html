@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Reference Relief Globe</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Ccircle cx='48' cy='48' r='42' fill='%23e6ebf3'/%3E%3Cpath d='M24 44c11-15 37-18 49-9 8 7 6 22-5 30-14 10-33 7-43-6-4-5-4-10-1-15z' fill='%23c7d2e4'/%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="./styles.css?v=5" />
+    <link rel="stylesheet" href="./styles.css?v=7" />
   </head>
   <body>
     <main class="viewport" aria-label="Reference relief globe">
       <div id="stage" class="stage"></div>
+      <h1 class="site-title">TIME + PLACE</h1>
       <p id="status" class="status" role="status" aria-live="polite">Loading globe data...</p>
 
       <!-- Festival Info (top right, shown on click) -->
@@ -27,9 +28,6 @@
         </div>
       </div>
 
-      <!-- Category Filters (left side) -->
-      <div id="category-filters" class="category-filters"></div>
-
       <!-- Bottom Bar: Date above, then [Temperature | Slider | Festivals] -->
       <div id="bottom-bar" class="bottom-bar">
         <div id="date-display" class="date-display">
@@ -42,6 +40,6 @@
         </div>
       </div>
     </main>
-    <script type="module" src="./globe.js?v=24"></script>
+    <script type="module" src="./globe.js?v=30"></script>
   </body>
 </html>

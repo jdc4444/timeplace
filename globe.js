@@ -524,8 +524,20 @@ let topListActive = false;
 let _refreshTopList = null; // set by setupFestivalFireworks
 
 // ── Category Filter State ──
-const categoryFiltersEl = document.querySelector("#category-filters");
-const enabledCategories = new Set(); // populated after festivals load
+const enabledCategories = new Set(); // supercategory names when active; empty = show all
+
+// Map every original category → one of 4 supercategories
+const SUPER_MAP = {
+  Music: "Music",
+  Art: "Art", Architecture: "Art", Design: "Art", Craft: "Art",
+  Film: "Art", Literary: "Art", Dance: "Art", Theater: "Art", Fashion: "Art",
+  Culture: "Culture", Religious: "Culture", Historical: "Culture",
+  Folk: "Culture", Carnival: "Culture", Heritage: "Culture",
+  National: "Culture", Holiday: "Culture", Education: "Culture",
+  Sports: "Culture", Adventure: "Culture", Science: "Culture", Technology: "Culture",
+  Food: "Food", Nature: "Food", Wellness: "Food",
+};
+const SUPER_CATEGORIES = ["Art", "Culture", "Music", "Food"];
 
 // ── Thermal Layer State ──
 let thermalEnabled = true;
@@ -589,7 +601,7 @@ async function boot() {
   scene.environment = createStudioEnvironmentSafe(renderer);
 
   const camera = new THREE.PerspectiveCamera(31, 1, 0.05, 80);
-  camera.position.set(0, 0, 4.15);
+  camera.position.set(0, 0.15, 6.0);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enablePan = false;
@@ -597,13 +609,13 @@ async function boot() {
   controls.dampingFactor = 0.055;
   controls.rotateSpeed = 0.5;
   controls.zoomSpeed = 0.62;
-  controls.minDistance = 1.9;
+  controls.minDistance = 3;
   controls.maxDistance = 8;
   controls.target.set(0, 0, 0);
 
   const globeGroup = new THREE.Group();
-  globeGroup.rotation.y = 3.35;
-  globeGroup.rotation.x = 0;
+  globeGroup.rotation.y = 3.9;
+  globeGroup.rotation.x = 0.1;
   scene.add(globeGroup);
 
   const lightingRig = createLightingRig(scene, camera, controls);
@@ -1019,36 +1031,18 @@ function setupFestivalFireworks({
     setStatus("Ready", "ok");
   })();
 
-  // Build category toggle buttons
+  // Build 4 supercategory toggle buttons (pinned, independent of list)
   function buildCategoryFilters() {
-    if (!categoryFiltersEl) return;
-    const all = getFestivals();
-    if (!all) return;
+    // Remove existing filter row if rebuilding
+    const old = document.querySelector(".super-filters");
+    if (old) old.remove();
 
-    // Count categories
-    const counts = {};
-    for (const f of all) {
-      for (const c of (f.cat || "").split(/[,;]/).map(s => s.trim()).filter(Boolean)) {
-        counts[c] = (counts[c] || 0) + 1;
-      }
-    }
+    const row = document.createElement("div");
+    row.className = "super-filters";
 
-    // Sort by count, show all categories
-    const cats = Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .map(([c]) => c);
-
-    // Only these categories on by default
-    const defaultOn = new Set(["Art", "Culture", "Religious", "Historical", "Folk", "Carnival", "Heritage"]);
-    for (const c of cats) {
-      if (defaultOn.has(c)) enabledCategories.add(c);
-    }
-
-    categoryFiltersEl.innerHTML = "";
-    for (const cat of cats) {
-      const isOn = enabledCategories.has(cat);
+    for (const cat of SUPER_CATEGORIES) {
       const btn = document.createElement("button");
-      btn.className = "cat-toggle" + (isOn ? " is-on" : "");
+      btn.className = "cat-toggle";
       btn.textContent = cat;
       btn.addEventListener("click", () => {
         if (enabledCategories.has(cat)) {
@@ -1058,17 +1052,21 @@ function setupFestivalFireworks({
           enabledCategories.add(cat);
           btn.classList.add("is-on");
         }
-        if (topListActive && _refreshTopList) _refreshTopList();
+        // Always show the filtered list (even if we were on a detail view)
+        if (_refreshTopList) _refreshTopList();
       });
-      categoryFiltersEl.appendChild(btn);
+      row.appendChild(btn);
     }
+
+    // Add to viewport, positioned independently
+    document.querySelector(".viewport").appendChild(row);
   }
 
-  // Check if a festival passes category filter
+  // Check if a festival passes supercategory filter (none on = nothing shown)
   function passesCategoryFilter(f) {
-    if (enabledCategories.size === 0) return true;
+    if (enabledCategories.size === 0) return false;
     const cats = (f.cat || "").split(/[,;]/).map(s => s.trim()).filter(Boolean);
-    return cats.some(c => enabledCategories.has(c));
+    return cats.some(c => enabledCategories.has(SUPER_MAP[c] || "Culture"));
   }
 
   function formatDateRange(start, end) {
@@ -1152,16 +1150,15 @@ function setupFestivalFireworks({
       ? active
       : all.filter(passesCategoryFilter).sort((a, b) => (b.qi || 0) - (a.qi || 0)).slice(0, 10);
 
-    // Hide the normal single-festival fields
-    if (festivalInfoNameEl) festivalInfoNameEl.textContent = "";
-    if (festivalInfoLocationEl) festivalInfoLocationEl.textContent = "";
-    if (festivalInfoDateEl) festivalInfoDateEl.textContent = "";
-    if (festivalInfoTagsEl) festivalInfoTagsEl.innerHTML = "";
+    // Hide all single-festival detail elements so they don't take up space
+    if (festivalInfoNameEl) { festivalInfoNameEl.textContent = ""; festivalInfoNameEl.style.display = "none"; festivalInfoNameEl.onclick = null; festivalInfoNameEl.style.cursor = ""; }
+    if (festivalInfoLocationEl) { festivalInfoLocationEl.textContent = ""; festivalInfoLocationEl.style.display = "none"; }
+    if (festivalInfoDateEl) { festivalInfoDateEl.textContent = ""; festivalInfoDateEl.style.display = "none"; }
+    if (festivalInfoTagsEl) { festivalInfoTagsEl.innerHTML = ""; festivalInfoTagsEl.style.display = "none"; }
     if (festivalInfoDescEl) { festivalInfoDescEl.textContent = ""; festivalInfoDescEl.style.display = "none"; }
     if (festivalInfoDetailsEl) { festivalInfoDetailsEl.textContent = ""; festivalInfoDetailsEl.style.display = "none"; }
-    if (festivalInfoAttendanceEl) festivalInfoAttendanceEl.textContent = "";
-    if (festivalInfoInterestEl) festivalInfoInterestEl.textContent = "";
-    if (festivalInfoCoordsEl) festivalInfoCoordsEl.textContent = "";
+    const statsEl = festivalInfoEl.querySelector(".fi-stats");
+    if (statsEl) statsEl.style.display = "none";
 
     // Remove previous top-list if any
     let listEl = festivalInfoEl.querySelector(".fi-top-list");
@@ -1206,21 +1203,31 @@ function setupFestivalFireworks({
   function showFestivalInfo(festival) {
     if (!festivalInfoEl || !festival) return;
     hideTopList();
-    if (festivalInfoNameEl) festivalInfoNameEl.textContent = festival.name;
 
-    // Location
+    // Restore display on all detail elements
+    if (festivalInfoNameEl) {
+      festivalInfoNameEl.style.display = "";
+      festivalInfoNameEl.textContent = festival.name;
+      festivalInfoNameEl.style.cursor = "pointer";
+      festivalInfoNameEl.onclick = () => {
+        if (enabledCategories.size > 0 && _refreshTopList) _refreshTopList();
+      };
+    }
     if (festivalInfoLocationEl) {
+      festivalInfoLocationEl.style.display = "";
       const parts = [festival.city, festival.country].filter(Boolean);
       festivalInfoLocationEl.textContent = parts.join(", ");
     }
-
-    // Date
     if (festivalInfoDateEl) {
+      festivalInfoDateEl.style.display = "";
       festivalInfoDateEl.textContent = formatDateRange(festival.start, festival.end);
     }
+    const statsEl = festivalInfoEl.querySelector(".fi-stats");
+    if (statsEl) statsEl.style.display = "";
 
     // Category tags
     if (festivalInfoTagsEl) {
+      festivalInfoTagsEl.style.display = "";
       festivalInfoTagsEl.innerHTML = "";
       if (festival.cat) {
         const cats = festival.cat.split(/[,;]/).map(c => c.trim()).filter(Boolean);
