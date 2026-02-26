@@ -55,6 +55,7 @@ body {
 .stage {
   position: absolute;
   inset: 0;
+  z-index: 1;
 }
 
 /* ── Preset Dock (sits above bottom bar) ── */
@@ -474,13 +475,82 @@ body {
     font-size: 0.72rem;
   }
 
+  /* Title: centered on mobile */
+  .site-title {
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.72rem;
+  }
+
+  /* Filters: centered row below title */
+  .super-filters {
+    top: calc(clamp(20px, 4vh, 50px) + 1.4rem);
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    width: auto;
+    gap: 0.5rem;
+    justify-content: center;
+  }
+
+  .cat-toggle {
+    font-size: 0.52rem;
+    padding: 0.25rem 0.5rem;
+  }
+
+  /* Festival list: full width, below filters */
   .festival-info {
-    right: 12px;
-    max-width: calc(100vw - 24px);
+    top: calc(clamp(20px, 4vh, 50px) + 3.6rem);
+    left: 16px;
+    right: 16px;
+    max-width: none;
+    max-height: calc(100vh - clamp(20px, 4vh, 50px) - 3.6rem - 80px);
   }
 
   .fi-name {
-    font-size: 1.2rem;
+    font-size: 1rem;
+    margin-bottom: 0.15rem;
+  }
+
+  .fi-location {
+    font-size: 0.76rem;
+  }
+
+  .fi-date {
+    font-size: 0.72rem;
+  }
+
+  .fi-tags {
+    margin-top: 0.3rem;
+  }
+
+  .fi-tag {
+    font-size: 0.52rem;
+    padding: 0.1rem 0.38rem;
+  }
+
+  .fi-desc {
+    font-size: 0.74rem;
+    margin-top: 0.3rem;
+    line-height: 1.38;
+  }
+
+  .fi-details {
+    font-size: 0.68rem;
+    line-height: 1.4;
+  }
+
+  .fi-stats {
+    gap: 0.4rem;
+    margin-top: 0.3rem;
+  }
+
+  .fi-stat {
+    font-size: 0.64rem;
+  }
+
+  .fi-top-entry {
+    margin-bottom: 1rem;
   }
 
   .loader-spinner {
