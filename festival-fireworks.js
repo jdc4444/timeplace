@@ -56,6 +56,9 @@ const RELAUNCH_MAX = 3.5;
 // Per-festival surface positions (for click detection)
 let festivalPositions = null; // Float32Array(n*3), world-space positions on surface
 
+// Optional visibility filter — when set, only festivals passing this callback are shown/launched
+let _visibilityFilter = null; // (festival) => boolean
+
 // Pre-computed per-festival: dayOfYear for eligible window
 let festivalDays = null; // Int16Array — day of year (0-364) per festival, -1 if no date
 
@@ -174,6 +177,7 @@ function getEligibleFestivals() {
     let diff = Math.abs(fDay - currentDayOfYear);
     if (diff > 182) diff = 365 - diff; // wrap around year boundary
     if (diff <= DATE_WINDOW) {
+      if (_visibilityFilter && !_visibilityFilter(festivals[i])) continue;
       eligible.push(i);
     }
   }
@@ -461,9 +465,17 @@ export function updateFireworks(dt) {
 
   // Write buffers
   const n = Math.min(particles.length, MAX_PARTICLES);
+  // Build set of visible festival indices for fast lookup
+  const visibleSet = _visibilityFilter ? new Set(eligible) : null;
   for (let i = 0; i < MAX_PARTICLES; i++) {
     if (i < n) {
       const p = particles[i];
+      // Hide particles from filtered-out festivals
+      if (visibleSet && p.festivalIndex >= 0 && !visibleSet.has(p.festivalIndex)) {
+        alp[i] = 0;
+        siz[i] = 0;
+        continue;
+      }
       const fade = Math.max(0, p.life / p.maxLife);
       pos[i * 3] = p.x;
       pos[i * 3 + 1] = p.y;
@@ -508,6 +520,10 @@ export function setDayOfYear(day) {
 
 export function getFireworksPoints() {
   return fireworksPoints;
+}
+
+export function setVisibilityFilter(fn) {
+  _visibilityFilter = fn;
 }
 
 // ── Click detection: find nearest festival to a world-space ray intersection ──
@@ -558,5 +574,5 @@ export function getFestivals() {
 }
 
 export function getEligibleFestivalIndices() {
-  return lastEligible.length > 0 ? lastEligible : getEligibleFestivals();
+  return getEligibleFestivals();
 }

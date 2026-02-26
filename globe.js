@@ -19,6 +19,7 @@ import {
   getFireworksPoints,
   hitTestFestival,
   getFestivals,
+  setVisibilityFilter,
 } from "./festival-fireworks.js";
 import {
   createLabelSystem,
@@ -884,6 +885,9 @@ function setStatus(text, state) {
   } else {
     delete statusEl.dataset.state;
   }
+  if (state === "ok") {
+    document.querySelector(".viewport").classList.remove("is-loading");
+  }
 }
 
 // ── Thermal Layer ──
@@ -1025,8 +1029,9 @@ function setupFestivalFireworks({
     if (thermalData) setFireworksDayOfYear(thermalIndexToDayOfYear(thermalDay));
     createLabelSystem(globeGroup, heightSampler, landMaskData, landMaskWidth, landMaskHeight, terrainExaggeration, camera, renderer);
     getFireworksPoints().visible = true;
-    updateLabels();
     buildCategoryFilters();
+    setVisibilityFilter(passesCategoryFilter);
+    updateLabels();
     showTopFestivals();
     setStatus("Ready", "ok");
   })();
@@ -1053,6 +1058,7 @@ function setupFestivalFireworks({
           btn.classList.add("is-on");
         }
         // Always show the filtered list (even if we were on a detail view)
+        updateLabels();
         if (_refreshTopList) _refreshTopList();
       });
       row.appendChild(btn);
