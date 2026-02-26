@@ -317,7 +317,7 @@ function explode(p) {
 // ── Public API ──
 
 export async function loadFestivalData() {
-  const resp = await fetch("./data/festivals-2026.json");
+  const resp = await fetch("./data/festivals-2026.json?v=3");
   if (!resp.ok) throw new Error(`Failed to load festivals: ${resp.status}`);
   festivals = await resp.json();
 

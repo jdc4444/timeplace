@@ -18,6 +18,7 @@ import {
   setDayOfYear as setFireworksDayOfYear,
   getFireworksPoints,
   hitTestFestival,
+  getFestivals,
 } from "./festival-fireworks.js";
 import {
   createLabelSystem,
@@ -518,10 +519,16 @@ const festivalInfoInterestEl = document.querySelector("#festival-info-interest")
 const festivalInfoCoordsEl = document.querySelector("#festival-info-coords");
 
 // ── Festival Fireworks State ──
-let fireworksEnabled = false;
+let fireworksEnabled = true;
+let topListActive = false;
+let _refreshTopList = null; // set by setupFestivalFireworks
+
+// ── Category Filter State ──
+const categoryFiltersEl = document.querySelector("#category-filters");
+const enabledCategories = new Set(); // populated after festivals load
 
 // ── Thermal Layer State ──
-let thermalEnabled = false;
+let thermalEnabled = true;
 let thermalOpacity = 1.0;
 let thermalDay = 0;
 let thermalColorway = "thermal";
@@ -872,15 +879,12 @@ function setStatus(text, state) {
 function updateDayLabel(dayIndex) {
   if (!dateFullEl) return;
   const label = thermalData?.dateLabels?.[dayIndex];
-  const d = label ? new Date(label) : new Date(new Date().getFullYear(), 0, dayIndex + 1);
-  if (dateDayNameEl) {
-    dateDayNameEl.textContent = d.toLocaleDateString("en-US", { weekday: "short" });
-  }
-  dateFullEl.textContent = d.toLocaleDateString("en-US", { month: "long", day: "numeric" });
+  const d = label ? new Date(label) : new Date(2026, 0, dayIndex + 1);
+  dateFullEl.textContent = d.toLocaleDateString("en-US", { month: "long", day: "numeric" }) + " 2026";
 }
 
 function setupThermalLayer(globeMaterial, landMaskData, landMaskWidth, landMaskHeight) {
-  if (!temperatureBtnEl || !globeMaterial) return;
+  if (!globeMaterial) return;
 
   if (landMaskData) {
     setLandMask(landMaskData, landMaskWidth, landMaskHeight);
@@ -955,19 +959,12 @@ function setupThermalLayer(globeMaterial, landMaskData, landMaskWidth, landMaskH
     setStatus("Ready", "ok");
   }
 
-  // Temperature button toggle
-  temperatureBtnEl.addEventListener("click", async () => {
-    thermalEnabled = !thermalEnabled;
-    temperatureBtnEl.classList.toggle("is-active", thermalEnabled);
-    temperatureBtnEl.setAttribute("aria-pressed", String(thermalEnabled));
-    if (thermalEnabled) {
-      await ensureThermalData();
-      updateDayLabel(thermalDay);
-      applyThermalDay(thermalDay);
-    } else {
-      disableThermalMap();
-    }
-  });
+  // Auto-enable thermal on startup
+  (async () => {
+    await ensureThermalData();
+    updateDayLabel(thermalDay);
+    applyThermalDay(thermalDay);
+  })();
 
   // Day slider (rAF-throttled)
   let dayRaf = 0;
@@ -981,6 +978,7 @@ function setupThermalLayer(globeMaterial, landMaskData, landMaskWidth, landMaskH
         if (thermalEnabled) applyThermalDay(thermalDay);
         setFireworksDayOfYear(thermalIndexToDayOfYear(thermalDay));
         if (fireworksEnabled) updateLabels();
+        if (topListActive && _refreshTopList) _refreshTopList();
       });
     });
   }
@@ -998,39 +996,208 @@ function setupFestivalFireworks({
   camera,
   renderer,
 }) {
-  if (!festivalsBtnEl) return;
+  // Auto-enable festivals on startup
+  (async () => {
+    setStatus("Loading 4,710 festivals...", "loading");
+    await loadFestivalData();
+    setStatus("Building fireworks...", "loading");
+    createFireworks({
+      radius: RADIUS,
+      heightSampler,
+      landMaskData,
+      landMaskWidth,
+      landMaskHeight,
+      terrainExaggeration,
+    });
+    globeGroup.add(getFireworksPoints());
+    if (thermalData) setFireworksDayOfYear(thermalIndexToDayOfYear(thermalDay));
+    createLabelSystem(globeGroup, heightSampler, landMaskData, landMaskWidth, landMaskHeight, terrainExaggeration, camera, renderer);
+    getFireworksPoints().visible = true;
+    updateLabels();
+    buildCategoryFilters();
+    showTopFestivals();
+    setStatus("Ready", "ok");
+  })();
 
-  festivalsBtnEl.addEventListener("click", async () => {
-    fireworksEnabled = !fireworksEnabled;
-    festivalsBtnEl.classList.toggle("is-active", fireworksEnabled);
-    festivalsBtnEl.setAttribute("aria-pressed", String(fireworksEnabled));
-    if (fireworksEnabled) {
-      if (!getFireworksPoints()) {
-        setStatus("Loading 4,710 festivals...", "loading");
-        await loadFestivalData();
-        setStatus("Building fireworks...", "loading");
-        createFireworks({
-          radius: RADIUS,
-          heightSampler,
-          landMaskData,
-          landMaskWidth,
-          landMaskHeight,
-          terrainExaggeration,
-        });
-        globeGroup.add(getFireworksPoints());
-        if (thermalData) setFireworksDayOfYear(thermalIndexToDayOfYear(thermalDay));
-        // Initialize label system
-        createLabelSystem(globeGroup, heightSampler, landMaskData, landMaskWidth, landMaskHeight, terrainExaggeration, camera, renderer);
-        setStatus("Ready", "ok");
+  // Build category toggle buttons
+  function buildCategoryFilters() {
+    if (!categoryFiltersEl) return;
+    const all = getFestivals();
+    if (!all) return;
+
+    // Count categories
+    const counts = {};
+    for (const f of all) {
+      for (const c of (f.cat || "").split(/[,;]/).map(s => s.trim()).filter(Boolean)) {
+        counts[c] = (counts[c] || 0) + 1;
       }
-      getFireworksPoints().visible = true;
-      updateLabels();
-    } else {
-      if (getFireworksPoints()) getFireworksPoints().visible = false;
-      if (festivalInfoEl) festivalInfoEl.style.display = "none";
-      destroyLabels();
     }
-  });
+
+    // Sort by count, show all categories
+    const cats = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([c]) => c);
+
+    // Only these categories on by default
+    const defaultOn = new Set(["Art", "Culture", "Religious", "Historical", "Folk", "Carnival", "Heritage"]);
+    for (const c of cats) {
+      if (defaultOn.has(c)) enabledCategories.add(c);
+    }
+
+    categoryFiltersEl.innerHTML = "";
+    for (const cat of cats) {
+      const isOn = enabledCategories.has(cat);
+      const btn = document.createElement("button");
+      btn.className = "cat-toggle" + (isOn ? " is-on" : "");
+      btn.textContent = cat;
+      btn.addEventListener("click", () => {
+        if (enabledCategories.has(cat)) {
+          enabledCategories.delete(cat);
+          btn.classList.remove("is-on");
+        } else {
+          enabledCategories.add(cat);
+          btn.classList.add("is-on");
+        }
+        if (topListActive && _refreshTopList) _refreshTopList();
+      });
+      categoryFiltersEl.appendChild(btn);
+    }
+  }
+
+  // Check if a festival passes category filter
+  function passesCategoryFilter(f) {
+    if (enabledCategories.size === 0) return true;
+    const cats = (f.cat || "").split(/[,;]/).map(s => s.trim()).filter(Boolean);
+    return cats.some(c => enabledCategories.has(c));
+  }
+
+  function formatDateRange(start, end) {
+    if (!start) return "";
+    const opts = { month: "long", day: "numeric", year: "numeric" };
+    const s = new Date(start);
+    if (isNaN(s.getTime())) return "";
+    const sStr = s.toLocaleDateString("en-US", opts);
+    if (!end || end === start) return sStr;
+    const e = new Date(end);
+    if (isNaN(e.getTime()) || e.getTime() === s.getTime()) return sStr;
+    if (s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear()) {
+      return `${s.toLocaleDateString("en-US", { month: "long" })} ${s.getDate()}–${e.getDate()}, ${s.getFullYear()}`;
+    }
+    return `${sStr} – ${e.toLocaleDateString("en-US", opts)}`;
+  }
+
+  // Show top 5 festivals ranked by quality indicator, filtered near current day
+  _refreshTopList = showTopFestivals;
+  function showTopFestivals() {
+    if (!festivalInfoEl) return;
+    const all = getFestivals();
+    if (!all || all.length === 0) return;
+    topListActive = true;
+
+    const currentDoy = thermalIndexToDayOfYear(thermalDay);
+
+    function toDoy(dateStr) {
+      if (!dateStr) return -1;
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return -1;
+      const s = new Date(d.getFullYear(), 0, 0);
+      return Math.floor((d - s) / (1000 * 60 * 60 * 24)) - 1;
+    }
+
+    // Check if the current day intersects the festival's date range
+    // Events longer than 30 days only show during their start/end months
+    function intersects(f) {
+      const startDoy = toDoy(f.start);
+      if (startDoy < 0) return false;
+      const endDoy = f.end ? toDoy(f.end) : startDoy;
+      if (endDoy < 0) return startDoy === currentDoy;
+
+      const dur = endDoy >= startDoy ? endDoy - startDoy + 1 : (365 - startDoy) + endDoy + 1;
+      if (dur > 30) {
+        // Only show during the start month or end month
+        const startDate = new Date(f.start);
+        const endDate = f.end ? new Date(f.end) : startDate;
+        const currentDate = new Date(2026, 0, currentDoy + 1);
+        const curMonth = currentDate.getMonth();
+        return curMonth === startDate.getMonth() || curMonth === endDate.getMonth();
+      }
+
+      if (startDoy <= endDoy) {
+        return currentDoy >= startDoy && currentDoy <= endDoy;
+      }
+      // Wraps around year boundary
+      return currentDoy >= startDoy || currentDoy <= endDoy;
+    }
+
+    // Duration in days (min 1)
+    function duration(f) {
+      const s = toDoy(f.start);
+      const e = f.end ? toDoy(f.end) : s;
+      if (s < 0 || e < 0) return 1;
+      const d = e >= s ? e - s + 1 : (365 - s) + e + 1;
+      return Math.max(d, 1);
+    }
+
+    // Score: QI + timeliness bonus (short events score much higher)
+    function score(f) {
+      return (f.qi || 0) + 30 / Math.sqrt(duration(f));
+    }
+
+    // Get festivals happening on the current date, filtered by category, ranked by combined score
+    const filtered = all.filter(f => passesCategoryFilter(f) && intersects(f));
+    const active = filtered.sort((a, b) => score(b) - score(a));
+
+    // Show all active festivals for the day; fall back to top by QI if none
+    const list = active.length > 0
+      ? active
+      : all.filter(passesCategoryFilter).sort((a, b) => (b.qi || 0) - (a.qi || 0)).slice(0, 10);
+
+    // Hide the normal single-festival fields
+    if (festivalInfoNameEl) festivalInfoNameEl.textContent = "";
+    if (festivalInfoLocationEl) festivalInfoLocationEl.textContent = "";
+    if (festivalInfoDateEl) festivalInfoDateEl.textContent = "";
+    if (festivalInfoTagsEl) festivalInfoTagsEl.innerHTML = "";
+    if (festivalInfoDescEl) { festivalInfoDescEl.textContent = ""; festivalInfoDescEl.style.display = "none"; }
+    if (festivalInfoDetailsEl) { festivalInfoDetailsEl.textContent = ""; festivalInfoDetailsEl.style.display = "none"; }
+    if (festivalInfoAttendanceEl) festivalInfoAttendanceEl.textContent = "";
+    if (festivalInfoInterestEl) festivalInfoInterestEl.textContent = "";
+    if (festivalInfoCoordsEl) festivalInfoCoordsEl.textContent = "";
+
+    // Remove previous top-list if any
+    let listEl = festivalInfoEl.querySelector(".fi-top-list");
+    if (!listEl) {
+      listEl = document.createElement("div");
+      listEl.className = "fi-top-list";
+      festivalInfoEl.appendChild(listEl);
+    }
+    listEl.innerHTML = "";
+    for (const f of list) {
+      const loc = [f.city, f.country].filter(Boolean).join(", ");
+      const dateStr = formatDateRange(f.start, f.end);
+      const entry = document.createElement("div");
+      entry.className = "fi-top-entry";
+      entry.style.cursor = "pointer";
+      let html = `<div class="fi-name">${f.name}</div>
+        <div class="fi-location">${loc}</div>`;
+      if (dateStr) html += `<div class="fi-date">${dateStr}</div>`;
+      if (f.cat) {
+        const cats = f.cat.split(/[,;]/).map(c => c.trim()).filter(Boolean);
+        html += `<div class="fi-tags">${cats.map(c => `<span class="fi-tag">${c}</span>`).join("")}</div>`;
+      }
+      if (f.desc) html += `<p class="fi-desc">${f.desc}</p>`;
+      entry.innerHTML = html;
+      entry.addEventListener("click", () => showFestivalInfo(f));
+      listEl.appendChild(entry);
+    }
+    listEl.style.display = "";
+    festivalInfoEl.style.display = "";
+  }
+
+  function hideTopList() {
+    topListActive = false;
+    const listEl = festivalInfoEl?.querySelector(".fi-top-list");
+    if (listEl) listEl.style.display = "none";
+  }
 
   // Click-to-reveal festival info
   const raycaster = new THREE.Raycaster();
@@ -1038,6 +1205,7 @@ function setupFestivalFireworks({
 
   function showFestivalInfo(festival) {
     if (!festivalInfoEl || !festival) return;
+    hideTopList();
     if (festivalInfoNameEl) festivalInfoNameEl.textContent = festival.name;
 
     // Location
@@ -1047,11 +1215,8 @@ function setupFestivalFireworks({
     }
 
     // Date
-    if (festivalInfoDateEl && festival.start) {
-      const d = new Date(festival.start);
-      festivalInfoDateEl.textContent = d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
-    } else if (festivalInfoDateEl) {
-      festivalInfoDateEl.textContent = "";
+    if (festivalInfoDateEl) {
+      festivalInfoDateEl.textContent = formatDateRange(festival.start, festival.end);
     }
 
     // Category tags
@@ -1114,8 +1279,7 @@ function setupFestivalFireworks({
     if (festival) {
       showFestivalInfo(festival);
     } else {
-      // Dismiss info panel on click with no hit
-      if (festivalInfoEl) festivalInfoEl.style.display = "none";
+      showTopFestivals();
     }
   });
 }
