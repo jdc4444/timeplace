@@ -23,6 +23,7 @@ import {
   getFestivals,
   setVisibilityFilter,
   setSearchResults as setFireworksSearchResults,
+  setMaxParticles,
 } from "./festival-fireworks.js";
 import {
   createLabelSystem,
@@ -79,6 +80,16 @@ const ASSETS = {
   ],
   lakesCompatible: [
     "./data/ne_50m_lakes.geojson",
+    "./data/ne_110m_lakes.geojson"
+  ],
+  // ── Mobile-specific (110m) for fast initial load ──
+  countriesMobile: [
+    "./data/ne_110m_admin_0_countries.geojson"
+  ],
+  riversMobile: [
+    "./data/ne_110m_rivers_lake_centerlines.geojson"
+  ],
+  lakesMobile: [
     "./data/ne_110m_lakes.geojson"
   ],
   regionalDetailOverlays: [
@@ -665,6 +676,11 @@ async function boot() {
     memoryHint: Number(navigator.deviceMemory || NaN)
   });
 
+  // Apply mobile performance caps early
+  if (profile.isMobile) {
+    setMaxParticles(6000);
+  }
+
   const renderer = createRendererWithFallback(browser);
   if ("outputColorSpace" in renderer) {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -767,15 +783,26 @@ async function boot() {
     );
     const textureWidth = Math.min(requestedTextureWidth, sourceTextureWidth);
     const textureHeight = Math.max(2, Math.floor(textureWidth / 2));
-    const segments = resolveMeshSegments(textureWidth);
+    const segments = resolveMeshSegments(textureWidth, profile.isMobile);
 
     setStatus("Loading country and state outlines...", "loading");
-    const [countriesGeo, stateLinesGeo, riversGeo, lakesGeo] = await Promise.all([
-      fetchJsonWithFallback(profile.countriesSources, { timeoutMs: profile.geoTimeoutMs }),
-      fetchJsonWithFallback(profile.statesSources, { timeoutMs: profile.stateTimeoutMs }),
-      fetchJsonWithFallback(profile.riversSources, { timeoutMs: profile.geoTimeoutMs }),
-      fetchJsonWithFallback(profile.lakesSources, { timeoutMs: profile.geoTimeoutMs })
-    ]);
+    let countriesGeo, stateLinesGeo, riversGeo, lakesGeo;
+    if (profile.deferStates) {
+      // Mobile: load lightweight 110m countries + rivers + lakes first; states loaded later
+      [countriesGeo, riversGeo, lakesGeo] = await Promise.all([
+        fetchJsonWithFallback(profile.countriesSources, { timeoutMs: profile.geoTimeoutMs }),
+        fetchJsonWithFallback(profile.riversSources, { timeoutMs: profile.geoTimeoutMs }),
+        fetchJsonWithFallback(profile.lakesSources, { timeoutMs: profile.geoTimeoutMs })
+      ]);
+      stateLinesGeo = null; // deferred — loaded after globe is visible
+    } else {
+      [countriesGeo, stateLinesGeo, riversGeo, lakesGeo] = await Promise.all([
+        fetchJsonWithFallback(profile.countriesSources, { timeoutMs: profile.geoTimeoutMs }),
+        fetchJsonWithFallback(profile.statesSources, { timeoutMs: profile.stateTimeoutMs }),
+        fetchJsonWithFallback(profile.riversSources, { timeoutMs: profile.geoTimeoutMs }),
+        fetchJsonWithFallback(profile.lakesSources, { timeoutMs: profile.geoTimeoutMs })
+      ]);
+    }
 
     setStatus("Building vector terrain mesh (this may take a few seconds)...", "loading");
     await waitForNextFrame();
@@ -803,11 +830,14 @@ async function boot() {
       }
     }
     const baseHeightSampler = createHeightSampler(heightTexture.image, textureWidth, textureHeight);
-    setStatus("Loading regional terrain detail overlays...", "loading");
-    const regionalDetailOverlays = await loadRegionalDetailOverlays({
-      metaUrls: ASSETS.regionalDetailOverlays,
-      timeoutMs: 26000
-    });
+    let regionalDetailOverlays = [];
+    if (!profile.skipRegionalOverlays) {
+      setStatus("Loading regional terrain detail overlays...", "loading");
+      regionalDetailOverlays = await loadRegionalDetailOverlays({
+        metaUrls: ASSETS.regionalDetailOverlays,
+        timeoutMs: 26000
+      });
+    }
     const heightSampler = createCompositeHeightSampler(baseHeightSampler, regionalDetailOverlays);
     if (typeof heightTexture.dispose === "function") {
       heightTexture.dispose();
@@ -818,16 +848,18 @@ async function boot() {
     lakeMaskCanvas.height = 1;
 
     setStatus("Generating terrain micro-detail normals...", "loading");
+    const normalMaxW = profile.isMobile ? 1024 : Math.min(4096, Math.max(2048, Math.floor(textureWidth / 2)));
+    const normalMaxH = profile.isMobile ? 512 : Math.min(2048, Math.max(1024, Math.floor(textureHeight / 2)));
     const normalHeightCanvas = buildHeightCanvasFromSampler({
       sampler: heightSampler,
-      width: Math.min(4096, Math.max(2048, Math.floor(textureWidth / 2))),
-      height: Math.min(2048, Math.max(1024, Math.floor(textureHeight / 2))),
+      width: normalMaxW,
+      height: normalMaxH,
       landMaskData,
       landMaskWidth: textureWidth,
       landMaskHeight: textureHeight
     });
     const terrainNormalMap = createNormalMapFromHeightCanvas(normalHeightCanvas, {
-      maxSize: textureWidth >= 8192 ? 4096 : 2048,
+      maxSize: profile.isMobile ? 1024 : (textureWidth >= 8192 ? 4096 : 2048),
       strength: 3.2,
       anisotropy: Math.max(1, Math.floor(renderer.capabilities.getMaxAnisotropy() * 0.75))
     });
@@ -916,7 +948,7 @@ async function boot() {
     lightingControls.refresh();
 
     // ── Thermal Layer Integration ──
-    setupThermalLayer(globeMaterial, landMaskData, textureWidth, textureHeight);
+    setupThermalLayer(globeMaterial, landMaskData, textureWidth, textureHeight, profile.downscaleAtlas);
 
     // ── Festival Fireworks Integration ──
     setupFestivalFireworks({
@@ -934,13 +966,46 @@ async function boot() {
     updateDayLabel(thermalDay);
 
     setStatus("Ready", "ok");
+
+    // ── Deferred States Loading (mobile) ──
+    // Load state borders in background after globe is visible
+    if (profile.deferStates && !stateLinesGeo) {
+      fetchJsonWithFallback(profile.statesSources, { timeoutMs: profile.stateTimeoutMs })
+        .then((statesGeo) => {
+          const stateOverlay = buildVectorBorderGroup({
+            countriesGeo: null,   // skip — already drawn
+            stateLinesGeo: statesGeo,
+            riversGeo: null,      // skip — already drawn
+            lakesGeo: null,       // skip — already drawn
+            radius: RADIUS,
+            heightSampler,
+            landMaskData,
+            landMaskWidth: textureWidth,
+            landMaskHeight: textureHeight,
+            terrainExaggeration: materialSettings.terrainExaggeration,
+            normalStrength: materialSettings.normalStrength,
+            stateStepDeg: profile.borderStateStepDeg
+          });
+          if (stateOverlay.group) {
+            globeGroup.add(stateOverlay.group);
+            console.log("Deferred state borders loaded");
+          }
+        })
+        .catch(() => {
+          // State borders are optional — fail silently
+        });
+    }
   } catch (error) {
     console.error("Globe generation failed", error);
     setStatus("Failed to load required globe assets", "warn");
   }
 
   let previous = performance.now();
+  let renderFrameId = 0;
+  let contextLost = false;
+
   const render = (now) => {
+    if (contextLost) return;
     const dt = Math.min(0.05, (now - previous) * 0.001);
     previous = now;
 
@@ -956,9 +1021,23 @@ async function boot() {
     controls.update();
     lightingRig.update();
     renderer.render(scene, camera);
-    requestAnimationFrame(render);
+    renderFrameId = requestAnimationFrame(render);
   };
-  requestAnimationFrame(render);
+  renderFrameId = requestAnimationFrame(render);
+
+  // ── WebGL Context Loss Recovery ──
+  renderer.domElement.addEventListener("webglcontextlost", (e) => {
+    e.preventDefault();
+    contextLost = true;
+    cancelAnimationFrame(renderFrameId);
+    console.warn("WebGL context lost — pausing render loop");
+  });
+  renderer.domElement.addEventListener("webglcontextrestored", () => {
+    contextLost = false;
+    previous = performance.now();
+    renderFrameId = requestAnimationFrame(render);
+    console.log("WebGL context restored — resuming render loop");
+  });
 }
 
 function setStatus(text, state) {
@@ -1003,7 +1082,7 @@ function updateDayLabel(dayIndex) {
   dateFullEl.textContent = d.toLocaleDateString("en-US", { month: "long", day: "numeric", ...utcOpts }) + " " + d.getUTCFullYear();
 }
 
-function setupThermalLayer(globeMaterial, landMaskData, landMaskWidth, landMaskHeight) {
+function setupThermalLayer(globeMaterial, landMaskData, landMaskWidth, landMaskHeight, downscaleAtlas = false) {
   if (!globeMaterial) return;
 
   if (landMaskData) {
@@ -1062,7 +1141,7 @@ function setupThermalLayer(globeMaterial, landMaskData, landMaskWidth, landMaskH
 
     startAtlasBuild(
       loaded.allTemps, loaded.numDays,
-      { colorway: thermalColorway, blurRadius: thermalBlur },
+      { colorway: thermalColorway, blurRadius: thermalBlur, downscale: downscaleAtlas },
       THREE,
       (done, total) => {
         const pct = Math.round((done / total) * 100);
@@ -3968,24 +4047,31 @@ function detectBrowserProfile() {
 
 function selectRenderProfile({ browser, isCompact, memoryHint }) {
   const hasDeviceMemory = Number.isFinite(memoryHint);
-  const inferredMemory = hasDeviceMemory ? memoryHint : 12;
+  // iOS Safari doesn't expose navigator.deviceMemory — default to 3 GB on
+  // mobile (→ lowMemory path) instead of 12 GB (→ desktop path).
+  const inferredMemory = hasDeviceMemory ? memoryHint : (browser.isMobile ? 3 : 12);
   const lowMemory = inferredMemory <= 4;
   const midMemory = inferredMemory <= 8;
   const textureWidth = lowMemory ? 4096 : (isCompact || midMemory) ? 8192 : 16384;
 
   return {
     textureWidth,
-    maxPixelRatio: textureWidth >= 16384 ? 2.1 : 2.35,
-    countriesSources: ASSETS.countriesHigh,
+    lowMemory,
+    isMobile: browser.isMobile,
+    maxPixelRatio: browser.isMobile ? 1.5 : (textureWidth >= 16384 ? 2.1 : 2.35),
+    countriesSources: lowMemory ? ASSETS.countriesMobile : ASSETS.countriesHigh,
     statesSources: ASSETS.statesHigh,
-    riversSources: textureWidth >= 8192 ? ASSETS.riversHigh : ASSETS.riversCompatible,
-    lakesSources: textureWidth >= 8192 ? ASSETS.lakesHigh : ASSETS.lakesCompatible,
+    deferStates: lowMemory,
+    riversSources: lowMemory ? ASSETS.riversMobile : (textureWidth >= 8192 ? ASSETS.riversHigh : ASSETS.riversCompatible),
+    lakesSources: lowMemory ? ASSETS.lakesMobile : (textureWidth >= 8192 ? ASSETS.lakesHigh : ASSETS.lakesCompatible),
     borderCountryStepDeg: textureWidth >= 16384 ? 0.34 : textureWidth >= 8192 ? 0.55 : 1.05,
     borderStateStepDeg: textureWidth >= 16384 ? 0.46 : textureWidth >= 8192 ? 0.72 : 1.3,
     hydroRiverStepDeg: textureWidth >= 16384 ? 0.44 : textureWidth >= 8192 ? 0.66 : 1.2,
     hydroLakeStepDeg: textureWidth >= 16384 ? 0.5 : textureWidth >= 8192 ? 0.74 : 1.3,
     geoTimeoutMs: textureWidth >= 16384 ? 26000 : 22000,
-    stateTimeoutMs: textureWidth >= 16384 ? 90000 : 65000
+    stateTimeoutMs: textureWidth >= 16384 ? 90000 : 65000,
+    downscaleAtlas: lowMemory,
+    skipRegionalOverlays: browser.isMobile
   };
 }
 
@@ -4012,7 +4098,11 @@ function resolveHeightMapSources(textureWidth) {
   return ASSETS.heightMapsCompatible;
 }
 
-function resolveMeshSegments(textureWidth) {
+function resolveMeshSegments(textureWidth, isMobile = false) {
+  // Mobile: dramatically reduce geometry to prevent GPU memory exhaustion
+  if (isMobile) {
+    return { width: 480, height: 280, shellWidth: 96, shellHeight: 64 };
+  }
   if (textureWidth >= 16384) {
     return { width: 2688, height: 1344, shellWidth: 214, shellHeight: 148 };
   }

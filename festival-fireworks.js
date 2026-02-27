@@ -18,7 +18,10 @@ const EXPLODE_SPEED_MAX = 20 * S; // 0.10
 const DRAG = 0.96;
 const LATERAL_WOBBLE = 0.3 * S;
 
-const MAX_PARTICLES = 24000;
+let MAX_PARTICLES = 24000;
+
+/** Allow globe.js to reduce particle budget on mobile devices. */
+export function setMaxParticles(n) { MAX_PARTICLES = Math.max(1000, n); }
 
 // How many days around the current day a festival is eligible to fire
 const DATE_WINDOW = 5;

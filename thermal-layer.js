@@ -152,7 +152,7 @@ async function saveAtlasCache(key, buffer, numDays) {
 
 // ── Atlas Texture Creation ──
 
-export async function createAtlasTexture(buffer, numDays, THREE) {
+export async function createAtlasTexture(buffer, numDays, THREE, downscale = false) {
   const blob = new Blob([buffer], { type: "image/jpeg" });
   const url = URL.createObjectURL(blob);
   const img = new Image();
@@ -163,18 +163,25 @@ export async function createAtlasTexture(buffer, numDays, THREE) {
   });
   URL.revokeObjectURL(url);
 
-  console.log(`Thermal atlas: ${img.width}x${img.height}`);
+  console.log(`Thermal atlas: ${img.width}x${img.height}${downscale ? " (downscaling 2×)" : ""}`);
 
-  // Draw atlas onto canvas so we can apply the land mask
+  // Draw atlas onto canvas — optionally at half resolution for mobile
   const canvas = document.createElement("canvas");
-  canvas.width = img.width;
-  canvas.height = img.height;
+  if (downscale) {
+    canvas.width = Math.floor(img.width / 2);
+    canvas.height = Math.floor(img.height / 2);
+  } else {
+    canvas.width = img.width;
+    canvas.height = img.height;
+  }
   const ctx = canvas.getContext("2d");
-  ctx.drawImage(img, 0, 0);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
   // Apply land mask to each tile (ocean → white)
   if (_landMask) {
-    applyLandMaskToAtlasCanvas(ctx, numDays, ATLAS_FRAME_W, ATLAS_FRAME_H, ATLAS_COLS);
+    const fw = downscale ? Math.floor(ATLAS_FRAME_W / 2) : ATLAS_FRAME_W;
+    const fh = downscale ? Math.floor(ATLAS_FRAME_H / 2) : ATLAS_FRAME_H;
+    applyLandMaskToAtlasCanvas(ctx, numDays, fw, fh, ATLAS_COLS);
   }
 
   const texture = new THREE.CanvasTexture(canvas);
@@ -185,7 +192,9 @@ export async function createAtlasTexture(buffer, numDays, THREE) {
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.generateMipmaps = false;
 
-  const imgRows = img.height / ATLAS_FRAME_H;
+  // UV math uses ratios — works regardless of canvas resolution
+  const frameH = downscale ? Math.floor(ATLAS_FRAME_H / 2) : ATLAS_FRAME_H;
+  const imgRows = canvas.height / frameH;
   texture.repeat.set(1 / ATLAS_COLS, 1 / imgRows);
   texture.offset.set(0, 1 - 1 / imgRows);
 
@@ -233,6 +242,7 @@ export function startAtlasBuild(allTemps, numDays, opts, THREE, onProgress, onRe
   stopAtlas();
 
   const key = atlasKey(opts);
+  const downscale = !!opts.downscale;
   atlasNumDays = numDays;
   atlasRows = Math.ceil(numDays / ATLAS_COLS);
 
@@ -241,7 +251,7 @@ export function startAtlasBuild(allTemps, numDays, opts, THREE, onProgress, onRe
     const staticBuf = await loadStaticAtlas(staticAtlasUrl(opts));
     if (staticBuf) {
       console.log(`Thermal atlas from static file (${(staticBuf.byteLength / 1024 / 1024).toFixed(1)} MB)`);
-      atlasTexture = await createAtlasTexture(staticBuf, numDays, THREE);
+      atlasTexture = await createAtlasTexture(staticBuf, numDays, THREE, downscale);
       saveAtlasCache(key, staticBuf, numDays); // warm IDB for offline
       if (onProgress) onProgress(numDays, numDays);
       if (onReady) onReady(atlasTexture);
@@ -252,7 +262,7 @@ export function startAtlasBuild(allTemps, numDays, opts, THREE, onProgress, onRe
     const cached = await loadAtlasCache(key);
     if (cached) {
       console.log(`Thermal atlas from cache (${(cached.byteLength / 1024 / 1024).toFixed(1)} MB)`);
-      atlasTexture = await createAtlasTexture(cached, numDays, THREE);
+      atlasTexture = await createAtlasTexture(cached, numDays, THREE, downscale);
       if (onProgress) onProgress(numDays, numDays);
       if (onReady) onReady(atlasTexture);
       return;
@@ -274,7 +284,7 @@ export function startAtlasBuild(allTemps, numDays, opts, THREE, onProgress, onRe
 
         saveAtlasCache(key, buf, numDays);
 
-        atlasTexture = await createAtlasTexture(buf, numDays, THREE);
+        atlasTexture = await createAtlasTexture(buf, numDays, THREE, downscale);
         if (onReady) onReady(atlasTexture);
 
         if (worker) { worker.terminate(); worker = null; }

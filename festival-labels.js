@@ -25,9 +25,19 @@ let _renderer = null;
 
 // ── Texture rendering ──
 
+const MAX_TEXTURE_CACHE = 120;
+
 function createLabelTexture(text) {
   const cached = textureCache.get(text);
   if (cached) return cached;
+
+  // Evict oldest entries if cache exceeds limit
+  if (textureCache.size >= MAX_TEXTURE_CACHE) {
+    const oldest = textureCache.keys().next().value;
+    const entry = textureCache.get(oldest);
+    if (entry && entry.texture && entry.texture.dispose) entry.texture.dispose();
+    textureCache.delete(oldest);
+  }
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
