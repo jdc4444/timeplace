@@ -13,15 +13,13 @@ html,
 body {
   width: 100%;
   min-height: 100%;
-  min-height: 100dvh;
   margin: 0;
 }
 
 body {
   overflow: hidden;
   font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
-  background-color: var(--bg-bot);
-  background-image:
+  background:
     radial-gradient(88rem 54rem at 18% -8%, rgba(255, 255, 255, 0.42), transparent 64%),
     radial-gradient(72rem 52rem at 82% 10%, rgba(226, 234, 247, 0.26), transparent 68%),
     linear-gradient(180deg, var(--bg-top) 0%, var(--bg-mid) 58%, var(--bg-bot) 100%);
