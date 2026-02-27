@@ -82,14 +82,27 @@ const ASSETS = {
     "./data/ne_50m_lakes.geojson",
     "./data/ne_110m_lakes.geojson"
   ],
-  // ── Mobile-specific (110m) for fast initial load ──
-  countriesMobile: [
+  // ── Good phone: 10m countries (quality), 50m hydro (lighter) ──
+  countriesGoodPhone: [
+    "./data/ne_10m_admin_0_countries.geojson",
     "./data/ne_110m_admin_0_countries.geojson"
   ],
-  riversMobile: [
+  riversGoodPhone: [
+    "./data/ne_50m_rivers_lake_centerlines.geojson",
     "./data/ne_110m_rivers_lake_centerlines.geojson"
   ],
-  lakesMobile: [
+  lakesGoodPhone: [
+    "./data/ne_50m_lakes.geojson",
+    "./data/ne_110m_lakes.geojson"
+  ],
+  // ── Budget phone: 110m everything ──
+  countriesBudget: [
+    "./data/ne_110m_admin_0_countries.geojson"
+  ],
+  riversBudget: [
+    "./data/ne_110m_rivers_lake_centerlines.geojson"
+  ],
+  lakesBudget: [
     "./data/ne_110m_lakes.geojson"
   ],
   regionalDetailOverlays: [
@@ -677,8 +690,10 @@ async function boot() {
   });
 
   // Apply mobile performance caps early
-  if (profile.isMobile) {
+  if (profile.budgetPhone) {
     setMaxParticles(6000);
+  } else if (profile.isMobile) {
+    setMaxParticles(12000);
   }
 
   const renderer = createRendererWithFallback(browser);
@@ -783,7 +798,7 @@ async function boot() {
     );
     const textureWidth = Math.min(requestedTextureWidth, sourceTextureWidth);
     const textureHeight = Math.max(2, Math.floor(textureWidth / 2));
-    const segments = resolveMeshSegments(textureWidth, profile.isMobile);
+    const segments = resolveMeshSegments(textureWidth, profile.budgetPhone ? "budget" : profile.isMobile ? "good" : false);
 
     setStatus("Loading country and state outlines...", "loading");
     let countriesGeo, stateLinesGeo, riversGeo, lakesGeo;
@@ -848,8 +863,8 @@ async function boot() {
     lakeMaskCanvas.height = 1;
 
     setStatus("Generating terrain micro-detail normals...", "loading");
-    const normalMaxW = profile.isMobile ? 1024 : Math.min(4096, Math.max(2048, Math.floor(textureWidth / 2)));
-    const normalMaxH = profile.isMobile ? 512 : Math.min(2048, Math.max(1024, Math.floor(textureHeight / 2)));
+    const normalMaxW = profile.budgetPhone ? 1024 : profile.isMobile ? 2048 : Math.min(4096, Math.max(2048, Math.floor(textureWidth / 2)));
+    const normalMaxH = profile.budgetPhone ? 512 : profile.isMobile ? 1024 : Math.min(2048, Math.max(1024, Math.floor(textureHeight / 2)));
     const normalHeightCanvas = buildHeightCanvasFromSampler({
       sampler: heightSampler,
       width: normalMaxW,
@@ -859,7 +874,7 @@ async function boot() {
       landMaskHeight: textureHeight
     });
     const terrainNormalMap = createNormalMapFromHeightCanvas(normalHeightCanvas, {
-      maxSize: profile.isMobile ? 1024 : (textureWidth >= 8192 ? 4096 : 2048),
+      maxSize: profile.budgetPhone ? 1024 : profile.isMobile ? 2048 : (textureWidth >= 8192 ? 4096 : 2048),
       strength: 3.2,
       anisotropy: Math.max(1, Math.floor(renderer.capabilities.getMaxAnisotropy() * 0.75))
     });
@@ -4047,31 +4062,49 @@ function detectBrowserProfile() {
 
 function selectRenderProfile({ browser, isCompact, memoryHint }) {
   const hasDeviceMemory = Number.isFinite(memoryHint);
-  // iOS Safari doesn't expose navigator.deviceMemory — default to 3 GB on
-  // mobile (→ lowMemory path) instead of 12 GB (→ desktop path).
-  const inferredMemory = hasDeviceMemory ? memoryHint : (browser.isMobile ? 3 : 12);
+  // iOS Safari doesn't expose navigator.deviceMemory — assume decent phone (6 GB).
+  // Android reports actual memory. Desktop without API → assume 12 GB.
+  const inferredMemory = hasDeviceMemory ? memoryHint : (browser.isMobile ? 6 : 12);
+  const budgetPhone = browser.isMobile && inferredMemory <= 3;
+  const goodPhone = browser.isMobile && !budgetPhone;
+
+  // All mobile → 4096 textures (prevents GPU memory exhaustion).
+  // Desktop follows existing memory-based tiers.
   const lowMemory = inferredMemory <= 4;
   const midMemory = inferredMemory <= 8;
-  const textureWidth = lowMemory ? 4096 : (isCompact || midMemory) ? 8192 : 16384;
+  const textureWidth = browser.isMobile ? 4096
+    : lowMemory ? 4096
+    : (isCompact || midMemory) ? 8192 : 16384;
+
+  // GeoJSON sources: good phones get 10m countries + 50m hydro, budget gets 110m
+  const countriesSources = budgetPhone ? ASSETS.countriesBudget
+    : goodPhone ? ASSETS.countriesGoodPhone
+    : ASSETS.countriesHigh;
+  const riversSources = budgetPhone ? ASSETS.riversBudget
+    : goodPhone ? ASSETS.riversGoodPhone
+    : (textureWidth >= 8192 ? ASSETS.riversHigh : ASSETS.riversCompatible);
+  const lakesSources = budgetPhone ? ASSETS.lakesBudget
+    : goodPhone ? ASSETS.lakesGoodPhone
+    : (textureWidth >= 8192 ? ASSETS.lakesHigh : ASSETS.lakesCompatible);
 
   return {
     textureWidth,
-    lowMemory,
     isMobile: browser.isMobile,
-    maxPixelRatio: browser.isMobile ? 1.5 : (textureWidth >= 16384 ? 2.1 : 2.35),
-    countriesSources: lowMemory ? ASSETS.countriesMobile : ASSETS.countriesHigh,
+    budgetPhone,
+    maxPixelRatio: budgetPhone ? 1.5 : browser.isMobile ? 2.0 : (textureWidth >= 16384 ? 2.1 : 2.35),
+    countriesSources,
     statesSources: ASSETS.statesHigh,
-    deferStates: lowMemory,
-    riversSources: lowMemory ? ASSETS.riversMobile : (textureWidth >= 8192 ? ASSETS.riversHigh : ASSETS.riversCompatible),
-    lakesSources: lowMemory ? ASSETS.lakesMobile : (textureWidth >= 8192 ? ASSETS.lakesHigh : ASSETS.lakesCompatible),
+    deferStates: browser.isMobile,         // all phones defer states
+    riversSources,
+    lakesSources,
     borderCountryStepDeg: textureWidth >= 16384 ? 0.34 : textureWidth >= 8192 ? 0.55 : 1.05,
     borderStateStepDeg: textureWidth >= 16384 ? 0.46 : textureWidth >= 8192 ? 0.72 : 1.3,
     hydroRiverStepDeg: textureWidth >= 16384 ? 0.44 : textureWidth >= 8192 ? 0.66 : 1.2,
     hydroLakeStepDeg: textureWidth >= 16384 ? 0.5 : textureWidth >= 8192 ? 0.74 : 1.3,
     geoTimeoutMs: textureWidth >= 16384 ? 26000 : 22000,
     stateTimeoutMs: textureWidth >= 16384 ? 90000 : 65000,
-    downscaleAtlas: lowMemory,
-    skipRegionalOverlays: browser.isMobile
+    downscaleAtlas: browser.isMobile,      // all phones downscale atlas
+    skipRegionalOverlays: browser.isMobile // invisible at phone zoom
   };
 }
 
@@ -4098,10 +4131,14 @@ function resolveHeightMapSources(textureWidth) {
   return ASSETS.heightMapsCompatible;
 }
 
-function resolveMeshSegments(textureWidth, isMobile = false) {
-  // Mobile: dramatically reduce geometry to prevent GPU memory exhaustion
-  if (isMobile) {
+function resolveMeshSegments(textureWidth, mobileMode = false) {
+  // Budget phone: ultra-light geometry
+  if (mobileMode === "budget") {
     return { width: 480, height: 280, shellWidth: 96, shellHeight: 64 };
+  }
+  // Good phone: decent quality, still much lighter than desktop
+  if (mobileMode === "good") {
+    return { width: 768, height: 448, shellWidth: 128, shellHeight: 80 };
   }
   if (textureWidth >= 16384) {
     return { width: 2688, height: 1344, shellWidth: 214, shellHeight: 148 };
