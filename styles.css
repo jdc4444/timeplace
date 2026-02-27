@@ -643,28 +643,36 @@ body {
     text-align: center;
   }
 
-  /* Festival list: cropped above slider so text doesn't clash */
+  /* Festival list: frosted glass panel over globe */
   .festival-info {
     top: calc(clamp(20px, 4vh, 50px) + 7.15rem);
-    left: 16px;
-    right: 16px;
+    left: 0;
+    right: 0;
     max-width: none;
     max-height: calc(100vh - clamp(20px, 4vh, 50px) - 7.15rem - 90px - env(safe-area-inset-bottom, 0px));
     pointer-events: auto;
     -webkit-overflow-scrolling: touch;
+    background: rgba(242, 244, 247, 0.88);
+    -webkit-backdrop-filter: blur(18px) saturate(1.4);
+    backdrop-filter: blur(18px) saturate(1.4);
+    padding: 0.8rem 16px 1rem;
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
   }
 
   .fi-name {
     font-size: 1rem;
-    margin-bottom: 0.15rem;
+    margin-bottom: 0.12rem;
+    color: rgba(20, 30, 46, 0.95);
   }
 
   .fi-location {
     font-size: 0.78rem;
+    color: rgba(30, 42, 58, 0.72);
   }
 
   .fi-date {
     font-size: 0.74rem;
+    color: rgba(30, 42, 58, 0.6);
   }
 
   .fi-tags {
@@ -674,17 +682,21 @@ body {
   .fi-tag {
     font-size: 0.54rem;
     padding: 0.1rem 0.38rem;
+    background: rgba(36, 48, 64, 0.1);
+    color: rgba(30, 42, 58, 0.7);
   }
 
   .fi-desc {
     font-size: 0.76rem;
     margin-top: 0.3rem;
     line-height: 1.38;
+    color: rgba(24, 36, 52, 0.82);
   }
 
   .fi-details {
     font-size: 0.7rem;
     line-height: 1.4;
+    color: rgba(30, 42, 58, 0.62);
   }
 
   .fi-stats {
@@ -698,6 +710,14 @@ body {
 
   .fi-top-entry {
     margin-bottom: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  }
+
+  .fi-top-entry:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+    padding-bottom: 0;
   }
 
   .loader-spinner {
