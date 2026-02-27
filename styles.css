@@ -9,10 +9,15 @@
   box-sizing: border-box;
 }
 
+html {
+  background: var(--bg-bot);
+}
+
 html,
 body {
   width: 100%;
   min-height: 100%;
+  min-height: 100dvh;
   margin: 0;
 }
 
@@ -141,7 +146,8 @@ body {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(35, 48, 64, 0.4);
-  margin-bottom: 1rem;
+  text-align: center;
+  margin: 0.6rem 0 0.8rem;
 }
 
 /* Hide search bar during loading */
@@ -577,9 +583,11 @@ body {
     padding: 0.28rem 0.5rem;
   }
 
+  /* Bottom bar: raised, with safe-area padding for iPhone home indicator */
   .bottom-bar {
     width: calc(100vw - 20px);
     gap: 0.5rem;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   }
 
   .dock-btn {
@@ -589,19 +597,19 @@ body {
 
   .date-day-name,
   .date-full {
-    font-size: 0.72rem;
+    font-size: 0.76rem;
   }
 
-  /* Title: centered on mobile */
+  /* Title: centered on mobile, slightly larger */
   .site-title {
     left: 50%;
     transform: translateX(-50%);
-    font-size: 0.72rem;
+    font-size: 0.78rem;
   }
 
-  /* Search bar: subtle underline on mobile, 16px to prevent iOS zoom */
+  /* Search bar: subtle underline, balanced type size */
   .search-container {
-    top: calc(clamp(20px, 4vh, 50px) + 1.4rem);
+    top: calc(clamp(20px, 4vh, 50px) + 1.6rem);
     left: 16px;
     right: 16px;
     transform: none;
@@ -610,21 +618,21 @@ body {
   }
 
   .search-input {
-    font-size: 16px;
-    padding: 0.4rem 1.6rem 0.4rem 0;
+    font-size: 0.86rem;
+    padding: 0.5rem 1.6rem 0.5rem 0;
   }
 
   .search-placeholder {
-    font-size: 16px;
+    font-size: 0.86rem;
   }
 
   .search-cursor {
-    font-size: 16px;
+    font-size: 0.86rem;
   }
 
-  /* Filters: full-width row, buttons fill evenly */
+  /* Filters: more space below search, full-width buttons */
   .super-filters {
-    top: calc(clamp(20px, 4vh, 50px) + 4.2rem);
+    top: calc(clamp(20px, 4vh, 50px) + 4.8rem);
     left: 16px;
     right: 16px;
     transform: none;
@@ -635,20 +643,22 @@ body {
 
   .cat-toggle {
     flex: 1;
-    font-size: 0.62rem;
-    padding: 0.34rem 0;
+    font-size: 0.66rem;
+    padding: 0.36rem 0;
     text-align: center;
   }
 
-  /* Festival list: full width, below filters, scrollable on iOS */
+  /* Festival list: cropped above slider so text doesn't clash */
   .festival-info {
-    top: calc(clamp(20px, 4vh, 50px) + 6.2rem);
+    top: calc(clamp(20px, 4vh, 50px) + 7rem);
     left: 16px;
     right: 16px;
     max-width: none;
-    max-height: calc(100vh - clamp(20px, 4vh, 50px) - 6.2rem - 80px);
+    max-height: calc(100vh - clamp(20px, 4vh, 50px) - 7rem - 90px - env(safe-area-inset-bottom, 0px));
     pointer-events: auto;
     -webkit-overflow-scrolling: touch;
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent);
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent);
   }
 
   .fi-name {
@@ -657,11 +667,11 @@ body {
   }
 
   .fi-location {
-    font-size: 0.76rem;
+    font-size: 0.78rem;
   }
 
   .fi-date {
-    font-size: 0.72rem;
+    font-size: 0.74rem;
   }
 
   .fi-tags {
@@ -669,18 +679,18 @@ body {
   }
 
   .fi-tag {
-    font-size: 0.52rem;
+    font-size: 0.54rem;
     padding: 0.1rem 0.38rem;
   }
 
   .fi-desc {
-    font-size: 0.74rem;
+    font-size: 0.76rem;
     margin-top: 0.3rem;
     line-height: 1.38;
   }
 
   .fi-details {
-    font-size: 0.68rem;
+    font-size: 0.7rem;
     line-height: 1.4;
   }
 
@@ -690,7 +700,7 @@ body {
   }
 
   .fi-stat {
-    font-size: 0.64rem;
+    font-size: 0.66rem;
   }
 
   .fi-top-entry {

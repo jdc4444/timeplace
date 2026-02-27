@@ -212,6 +212,21 @@ export function isAtlasReady() {
   return atlasTexture !== null;
 }
 
+// ── Static Pre-rendered Atlas ──
+
+function staticAtlasUrl(opts) {
+  const stops = opts.customStops ? JSON.stringify(opts.customStops) : opts.colorway;
+  return `./data/thermal-atlas-${stops}-${opts.blurRadius}.jpg`;
+}
+
+async function loadStaticAtlas(url) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    return await resp.arrayBuffer();
+  } catch { return null; }
+}
+
 // ── Start Atlas Build ──
 
 export function startAtlasBuild(allTemps, numDays, opts, THREE, onProgress, onReady) {
@@ -221,8 +236,20 @@ export function startAtlasBuild(allTemps, numDays, opts, THREE, onProgress, onRe
   atlasNumDays = numDays;
   atlasRows = Math.ceil(numDays / ATLAS_COLS);
 
-  // Try IDB cache first
-  loadAtlasCache(key).then(async (cached) => {
+  (async () => {
+    // Tier 1: Try static pre-rendered atlas file
+    const staticBuf = await loadStaticAtlas(staticAtlasUrl(opts));
+    if (staticBuf) {
+      console.log(`Thermal atlas from static file (${(staticBuf.byteLength / 1024 / 1024).toFixed(1)} MB)`);
+      atlasTexture = await createAtlasTexture(staticBuf, numDays, THREE);
+      saveAtlasCache(key, staticBuf, numDays); // warm IDB for offline
+      if (onProgress) onProgress(numDays, numDays);
+      if (onReady) onReady(atlasTexture);
+      return;
+    }
+
+    // Tier 2: Try IDB cache
+    const cached = await loadAtlasCache(key);
     if (cached) {
       console.log(`Thermal atlas from cache (${(cached.byteLength / 1024 / 1024).toFixed(1)} MB)`);
       atlasTexture = await createAtlasTexture(cached, numDays, THREE);
@@ -231,7 +258,7 @@ export function startAtlasBuild(allTemps, numDays, opts, THREE, onProgress, onRe
       return;
     }
 
-    // No cache — render in worker
+    // Tier 3: No cache — render in worker
     worker = new Worker("./thermal-worker.js");
 
     worker.onmessage = async (e) => {
@@ -263,7 +290,7 @@ export function startAtlasBuild(allTemps, numDays, opts, THREE, onProgress, onRe
       },
       [allTemps.buffer],
     );
-  });
+  })();
 }
 
 export function stopAtlas() {
