@@ -645,15 +645,13 @@ body {
 
   /* Festival list: cropped above slider so text doesn't clash */
   .festival-info {
-    top: calc(clamp(20px, 4vh, 50px) + 7rem);
+    top: calc(clamp(20px, 4vh, 50px) + 7.15rem);
     left: 16px;
     right: 16px;
     max-width: none;
-    max-height: calc(100vh - clamp(20px, 4vh, 50px) - 7rem - 90px - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100vh - clamp(20px, 4vh, 50px) - 7.15rem - 90px - env(safe-area-inset-bottom, 0px));
     pointer-events: auto;
     -webkit-overflow-scrolling: touch;
-    mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent);
-    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent);
   }
 
   .fi-name {

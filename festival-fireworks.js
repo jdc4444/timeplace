@@ -70,8 +70,9 @@ let rangeModeActive = false;
 let rangeDayStart = 0;
 let rangeDayEnd = 0;
 
-// Pre-computed per-festival: dayOfYear for eligible window
-let festivalDays = null; // Int16Array — day of year (0-364) per festival, -1 if no date
+// Pre-computed per-festival: start/end dayOfYear for eligible window (clamped to 2026)
+let festivalDayStart = null; // Int16Array — start day of year (0-364), -1 if no date
+let festivalDayEnd = null;   // Int16Array — end day of year (0-364), -1 if no date
 
 // ── Duplicated helpers (same as globe.js, avoids refactoring exports) ──
 
@@ -150,6 +151,17 @@ function dateToDayOfYear(dateStr) {
   return Math.floor(diff / (1000 * 60 * 60 * 24)) - 1; // 0-based
 }
 
+// Convert a date string to a calendar day within the 2026 year (0=Jan 1, 364=Dec 31)
+// Clamps dates outside 2026 to the year boundaries
+function dateTo2026CalDay(dateStr) {
+  if (!dateStr) return -1;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return -1;
+  const jan1 = new Date(2026, 0, 1);
+  const diff = Math.round((d - jan1) / 86400000);
+  return clamp(diff, 0, 364);
+}
+
 function buildTangentFrame(n) {
   const ref = Math.abs(n.y) < 0.99
     ? new THREE.Vector3(0, 1, 0)
@@ -180,7 +192,7 @@ export function computeSurfacePosition(festival) {
 // ── Eligible festivals for current day ──
 
 function getEligibleFestivals() {
-  if (!festivals || !festivalDays) return [];
+  if (!festivals || !festivalDayStart) return [];
   const eligible = [];
   for (let i = 0; i < festivals.length; i++) {
     const f = festivals[i];
@@ -190,24 +202,31 @@ function getEligibleFestivals() {
       eligible.push(i);
       continue;
     }
+    // When search is active, ONLY show search result festivals
+    if (_searchResultSet) continue;
 
-    const fDay = festivalDays[i];
-    if (fDay < 0) continue; // no date
+    const fStart = festivalDayStart[i];
+    const fEnd = festivalDayEnd[i];
+    if (fStart < 0) continue; // no date or outside 2026
 
     let isInWindow;
     if (rangeModeActive) {
-      // Range mode: check if festival day falls within [rangeDayStart, rangeDayEnd]
+      // Range mode: check if festival date range overlaps with slider range
       if (rangeDayStart <= rangeDayEnd) {
-        isInWindow = fDay >= rangeDayStart && fDay <= rangeDayEnd;
+        // Normal range: festival overlaps if fStart <= rangeDayEnd && fEnd >= rangeDayStart
+        isInWindow = fStart <= rangeDayEnd && fEnd >= rangeDayStart;
       } else {
         // Year-wrapping range (e.g., Dec 1 → Feb 28)
-        isInWindow = fDay >= rangeDayStart || fDay <= rangeDayEnd;
+        isInWindow = fEnd >= rangeDayStart || fStart <= rangeDayEnd;
       }
     } else {
-      // Single-day mode with DATE_WINDOW
-      let diff = Math.abs(fDay - currentDayOfYear);
-      if (diff > 182) diff = 365 - diff;
-      isInWindow = diff <= DATE_WINDOW;
+      // Single-day mode: festival is eligible if currentDayOfYear falls within [fStart, fEnd] ± DATE_WINDOW
+      if (fStart <= fEnd) {
+        isInWindow = currentDayOfYear >= (fStart - DATE_WINDOW) && currentDayOfYear <= (fEnd + DATE_WINDOW);
+      } else {
+        // Year-wrapping festival
+        isInWindow = currentDayOfYear >= (fStart - DATE_WINDOW) || currentDayOfYear <= (fEnd + DATE_WINDOW);
+      }
     }
 
     if (!isInWindow) continue;
@@ -356,12 +375,33 @@ function explode(p) {
 export async function loadFestivalData() {
   const resp = await fetch("./data/festivals-2026.json?v=3");
   if (!resp.ok) throw new Error(`Failed to load festivals: ${resp.status}`);
-  festivals = await resp.json();
+  const raw = await resp.json();
+  // Filter out festivals with no dates or year-round/near-year-round spans (300+ days)
+  festivals = raw.filter(f => {
+    if (!f.start) return false;
+    if (!f.end) return true; // single-date event is fine
+    const days = (new Date(f.end) - new Date(f.start)) / 86400000;
+    return days < 300;
+  });
 
-  // Pre-compute day of year for each festival
-  festivalDays = new Int16Array(festivals.length);
+  // Pre-compute start/end calendar days for each festival, clamped to 2026
+  festivalDayStart = new Int16Array(festivals.length);
+  festivalDayEnd = new Int16Array(festivals.length);
   for (let i = 0; i < festivals.length; i++) {
-    festivalDays[i] = dateToDayOfYear(festivals[i].start);
+    const f = festivals[i];
+    festivalDayStart[i] = dateTo2026CalDay(f.start);
+    festivalDayEnd[i] = f.end ? dateTo2026CalDay(f.end) : festivalDayStart[i];
+    // If both clamp to 0 (entirely before 2026) or both to 364 (entirely after), mark as -1
+    if (festivalDayStart[i] === festivalDayEnd[i] && f.start && f.end) {
+      const s = new Date(f.start);
+      const e = new Date(f.end);
+      const jan1 = new Date(2026, 0, 1);
+      const dec31 = new Date(2026, 11, 31);
+      if (e < jan1 || s > dec31) {
+        festivalDayStart[i] = -1;
+        festivalDayEnd[i] = -1;
+      }
+    }
   }
 
   // Allocate surface positions for click detection
@@ -372,8 +412,8 @@ export async function loadFestivalData() {
 
   // Default to today's day of year
   const now = new Date();
-  const startOfYear = new Date(now.getFullYear(), 0, 0);
-  currentDayOfYear = Math.floor((now - startOfYear) / (1000 * 60 * 60 * 24)) - 1;
+  const jan1 = new Date(2026, 0, 1);
+  currentDayOfYear = Math.max(0, Math.min(364, Math.round((now - jan1) / 86400000)));
 
   return festivals;
 }
@@ -560,10 +600,10 @@ export function setVisibilityFilter(fn) {
 }
 
 export function setSearchResults(resultsArray) {
-  if (resultsArray && resultsArray.length > 0) {
-    _searchResultSet = new Set(resultsArray);
+  if (resultsArray === null) {
+    _searchResultSet = null;          // search exited — back to normal
   } else {
-    _searchResultSet = null;
+    _searchResultSet = new Set(resultsArray); // empty Set = 0 results, still blocks non-search
   }
   // Reset launch timers so new eligible festivals fire immediately
   if (festivalNextLaunch) festivalNextLaunch.fill(0);

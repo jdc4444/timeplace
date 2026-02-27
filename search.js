@@ -93,15 +93,37 @@ const ALL_COUNTRIES_LOWER = new Map();
 for (const name of COUNTRY_REGIONS.keys()) {
   ALL_COUNTRIES_LOWER.set(name.toLowerCase(), name);
 }
-// Also add common short forms
+// Also add common short forms and aliases
+// IMPORTANT: values must match the country strings in festivals-2026.json (e.g. "USA", "UK")
+// countryMatches() uses fc.includes(sc), so short values match compound entries like "USA/Canada"
 ALL_COUNTRIES_LOWER.set("czech republic", "Czechia");
-ALL_COUNTRIES_LOWER.set("drc", "Congo");
+ALL_COUNTRIES_LOWER.set("drc", "DRC");
 ALL_COUNTRIES_LOWER.set("ivory coast", "Côte d'Ivoire");
 ALL_COUNTRIES_LOWER.set("the gambia", "Gambia");
-ALL_COUNTRIES_LOWER.set("uae", "United Arab Emirates");
-ALL_COUNTRIES_LOWER.set("uk", "United Kingdom");
-ALL_COUNTRIES_LOWER.set("usa", "United States of America");
+ALL_COUNTRIES_LOWER.set("uae", "UAE");
+ALL_COUNTRIES_LOWER.set("united arab emirates", "UAE");
+ALL_COUNTRIES_LOWER.set("uk", "UK");
+ALL_COUNTRIES_LOWER.set("united kingdom", "UK");
+ALL_COUNTRIES_LOWER.set("usa", "USA");
+ALL_COUNTRIES_LOWER.set("us", "USA");
+ALL_COUNTRIES_LOWER.set("united states", "USA");
+ALL_COUNTRIES_LOWER.set("united states of america", "USA");
 ALL_COUNTRIES_LOWER.set("st. lucia", "Saint Lucia");
+ALL_COUNTRIES_LOWER.set("korea", "South Korea");
+ALL_COUNTRIES_LOWER.set("saudi", "Saudi Arabia");
+ALL_COUNTRIES_LOWER.set("britain", "UK");
+ALL_COUNTRIES_LOWER.set("great britain", "UK");
+ALL_COUNTRIES_LOWER.set("england", "UK");
+ALL_COUNTRIES_LOWER.set("scotland", "UK");
+ALL_COUNTRIES_LOWER.set("wales", "UK");
+ALL_COUNTRIES_LOWER.set("holland", "Netherlands");
+ALL_COUNTRIES_LOWER.set("burma", "Myanmar");
+ALL_COUNTRIES_LOWER.set("persia", "Iran");
+ALL_COUNTRIES_LOWER.set("congo", "Democratic Republic of Congo");
+ALL_COUNTRIES_LOWER.set("vietnam", "Vietnam");
+ALL_COUNTRIES_LOWER.set("laos", "Laos");
+ALL_COUNTRIES_LOWER.set("america", "USA");
+ALL_COUNTRIES_LOWER.set("states", "USA");
 
 // ── Well-known city names (from the festival dataset's most common cities) ──
 // Used to extract city queries like "new york", "rio", "tokyo" from search text
@@ -132,7 +154,178 @@ const KNOWN_CITIES = new Map([
   ["hanoi", "Hanoi"], ["bali", "Bali"], ["chiang mai", "Chiang Mai"],
   ["luang prabang", "Luang Prabang"], ["phnom penh", "Phnom Penh"],
   ["lhasa", "Lhasa"], ["taipei", "Taipei"], ["osaka", "Osaka"],
+  ["la", "Los Angeles"], ["ny", "New York"], ["nyc", "New York"],
+  ["sf", "San Francisco"], ["dc", "Washington"], ["nola", "New Orleans"],
 ]);
+
+// ── Well-known holidays with 2026 dates ──
+// Provides date-awareness for holiday searches so the slider moves to the right time
+const HOLIDAYS = [
+  // Fixed-date holidays
+  { patterns: ["new year", "new years", "new year's", "hogmanay"], start: "2026-01-01", end: "2026-01-01" },
+  { patterns: ["epiphany", "three kings", "dia de reyes"], start: "2026-01-06", end: "2026-01-06" },
+  { patterns: ["valentine", "valentines", "valentine's", "valentines day", "valentine's day", "san valentin"], start: "2026-02-14", end: "2026-02-14" },
+  { patterns: ["st patrick", "saint patrick", "st. patrick", "st patricks", "saint patricks"], start: "2026-03-17", end: "2026-03-17" },
+  { patterns: ["may day", "beltane"], start: "2026-05-01", end: "2026-05-01" },
+  { patterns: ["independence day", "4th of july", "fourth of july", "july 4th"], start: "2026-07-04", end: "2026-07-04" },
+  { patterns: ["bastille", "bastille day"], start: "2026-07-14", end: "2026-07-14" },
+  { patterns: ["halloween"], start: "2026-10-31", end: "2026-10-31" },
+  { patterns: ["guy fawkes", "bonfire night"], start: "2026-11-05", end: "2026-11-05" },
+  { patterns: ["day of the dead", "dia de muertos", "dia de los muertos"], start: "2026-11-01", end: "2026-11-02" },
+  { patterns: ["thanksgiving"], start: "2026-11-26", end: "2026-11-26" },
+  { patterns: ["christmas", "xmas", "christmas eve", "noel"], start: "2026-12-24", end: "2026-12-25" },
+  { patterns: ["boxing day"], start: "2026-12-26", end: "2026-12-26" },
+  { patterns: ["new year's eve", "new years eve", "nye", "silvester", "hogmanay"], start: "2026-12-31", end: "2026-12-31" },
+  // Moving holidays (2026 dates)
+  { patterns: ["chinese new year", "lunar new year", "spring festival", "tet"], start: "2026-02-17", end: "2026-02-17" },
+  { patterns: ["mardi gras", "fat tuesday", "shrove tuesday"], start: "2026-02-17", end: "2026-02-17" },
+  { patterns: ["carnival", "carnaval"], start: "2026-02-14", end: "2026-02-17" },
+  { patterns: ["holi"], start: "2026-03-10", end: "2026-03-11" },
+  { patterns: ["easter"], start: "2026-04-05", end: "2026-04-06" },
+  { patterns: ["passover", "pesach"], start: "2026-04-01", end: "2026-04-09" },
+  { patterns: ["ramadan"], start: "2026-02-18", end: "2026-03-19" },
+  { patterns: ["eid al-fitr", "eid al fitr", "eid"], start: "2026-03-20", end: "2026-03-21" },
+  { patterns: ["eid al-adha", "eid al adha"], start: "2026-05-27", end: "2026-05-28" },
+  { patterns: ["vesak", "buddha day"], start: "2026-05-24", end: "2026-05-24" },
+  { patterns: ["songkran"], start: "2026-04-13", end: "2026-04-15" },
+  { patterns: ["diwali", "deepavali"], start: "2026-10-20", end: "2026-10-20" },
+  { patterns: ["hanukkah", "chanukah"], start: "2026-12-05", end: "2026-12-13" },
+  { patterns: ["mid-autumn", "mid autumn", "moon festival", "mooncake"], start: "2026-09-23", end: "2026-09-23" },
+  { patterns: ["oktoberfest"], start: "2026-09-19", end: "2026-10-04" },
+  { patterns: ["mother's day", "mothers day"], start: "2026-05-10", end: "2026-05-10" },
+  { patterns: ["father's day", "fathers day"], start: "2026-06-21", end: "2026-06-21" },
+];
+
+// Build a quick-lookup: lowercase pattern → holiday entry
+const HOLIDAY_MAP = new Map();
+for (const h of HOLIDAYS) {
+  for (const p of h.patterns) {
+    HOLIDAY_MAP.set(p.toLowerCase(), h);
+  }
+}
+
+/**
+ * Check if text contains a known holiday. Returns { holiday, start, end } or null.
+ */
+function matchHoliday(text) {
+  const lower = text.toLowerCase().trim();
+  // Try longest patterns first (multi-word) to avoid partial matches
+  const sorted = [...HOLIDAY_MAP.entries()].sort((a, b) => b[0].length - a[0].length);
+  for (const [pattern, holiday] of sorted) {
+    if (lower.includes(pattern)) {
+      return holiday;
+    }
+  }
+  return null;
+}
+
+// ── Lightweight spell correction ──
+
+// Damerau-Levenshtein distance (handles transpositions like "japsn" → "japan")
+function dlDist(a, b) {
+  const la = a.length, lb = b.length;
+  if (la === 0) return lb;
+  if (lb === 0) return la;
+  const d = Array.from({ length: la + 1 }, () => new Uint8Array(lb + 1));
+  for (let i = 0; i <= la; i++) d[i][0] = i;
+  for (let j = 0; j <= lb; j++) d[0][j] = j;
+  for (let i = 1; i <= la; i++) {
+    for (let j = 1; j <= lb; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + cost);
+      }
+    }
+  }
+  return d[la][lb];
+}
+
+// Build spell-check dictionary: lowercase → canonical form
+const _SPELL_DICT = new Map();
+function _addWord(lower, canonical) {
+  if (lower.length >= 3 && !_SPELL_DICT.has(lower)) _SPELL_DICT.set(lower, canonical);
+}
+// Countries
+for (const [lower, canonical] of ALL_COUNTRIES_LOWER) _addWord(lower, canonical.toLowerCase());
+// Cities
+for (const [lower, canonical] of KNOWN_CITIES) {
+  // Multi-word cities: add both full and individual words
+  _addWord(lower, canonical.toLowerCase());
+  if (lower.includes(" ")) for (const w of lower.split(" ")) _addWord(w, w);
+}
+// Months
+for (const m of Object.keys(MONTH_NAMES)) _addWord(m, m);
+// Categories
+for (const c of CATEGORY_NAMES) _addWord(c.toLowerCase(), c.toLowerCase());
+// Seasons
+for (const s of SEASON_NAMES) _addWord(s, s);
+// Holiday patterns
+for (const [p] of HOLIDAY_MAP) {
+  _addWord(p, p);
+  if (p.includes(" ")) for (const w of p.split(" ")) _addWord(w, w);
+}
+// Subregion aliases
+for (const alias of SUBREGION_ALIASES.keys()) {
+  _addWord(alias, alias);
+  if (alias.includes(" ")) for (const w of alias.split(" ")) _addWord(w, w);
+}
+// Common search terms
+for (const w of ["festival", "festivals", "music", "art", "culture", "food", "film",
+  "dance", "carnival", "heritage", "theater", "theatre", "literary", "religious",
+  "sports", "nature", "craft", "design", "fashion", "architecture", "adventure",
+  "wellness", "science", "technology", "education", "historical", "folk", "national",
+  // Time/date keywords — must be recognized so spell-check doesn't mangle them
+  "today", "now", "tonight", "soon", "upcoming", "coming", "anytime", "whenever",
+  "this", "next", "week", "month", "weekend", "year", "early", "mid", "late",
+  "through", "thru", "until"]) {
+  _addWord(w, w);
+}
+
+/**
+ * Correct typos in query text. Only fixes single words that are close to a known term.
+ * Returns the corrected string.
+ */
+function spellCorrect(text, skipLastWord = false) {
+  const words = text.split(/(\s+)/); // preserve whitespace tokens
+  // Optionally skip the last non-whitespace token (user may still be typing it)
+  let lastWordIdx = -1;
+  if (skipLastWord) {
+    for (let i = words.length - 1; i >= 0; i--) {
+      if (!/^\s*$/.test(words[i])) { lastWordIdx = i; break; }
+    }
+  }
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (/^\s*$/.test(w)) continue; // whitespace separator
+    if (i === lastWordIdx) continue; // skip word being typed
+    const lower = w.toLowerCase();
+    if (lower.length < 3) continue; // too short to correct
+    if (_SPELL_DICT.has(lower)) continue; // already known
+    if (STOP_WORDS.has(lower)) continue;
+
+    // Find closest match — distance 1 only to avoid false positives
+    let bestWord = null;
+    for (const [dictWord] of _SPELL_DICT) {
+      if (Math.abs(dictWord.length - lower.length) > 1) continue;
+      if (dlDist(lower, dictWord) <= 1) {
+        bestWord = dictWord;
+        break;
+      }
+    }
+    if (bestWord) {
+      // Preserve original casing style (all-lower, Title, UPPER)
+      if (w === w.toUpperCase() && w.length > 1) {
+        words[i] = bestWord.toUpperCase();
+      } else if (w[0] === w[0].toUpperCase()) {
+        words[i] = bestWord[0].toUpperCase() + bestWord.slice(1);
+      } else {
+        words[i] = bestWord;
+      }
+    }
+  }
+  return words.join("");
+}
 
 // ── Query parser ──
 
@@ -141,7 +334,8 @@ const KNOWN_CITIES = new Map([
  * Returns: { name?, cities?, countries?, subregions?, categories?, dateRange?, months?, raw }
  */
 export function parseSearchQuery(query) {
-  const raw = query.trim();
+  const corrected = spellCorrect(query.trim());
+  const raw = corrected;
   if (!raw) return { raw };
 
   let remaining = raw;
@@ -176,11 +370,150 @@ export function parseSearchQuery(query) {
     result.name = nameClean;
   }
 
+  // If no name was found but categories were extracted, those words might be event names
+  // e.g. "rio carnival" → city=Rio, category=Carnival, but no name
+  // Copy category words into name so they also match against festival names
+  if (!result.name && result.categories?.length) {
+    result.name = result.categories.join(" ");
+  }
+
+  // Pass 5: Holiday awareness — if no date was set, check if query matches a known holiday
+  // This lets "thanksgiving", "valentines day europe", "diwali" etc. move the slider
+  if (!result.dateRange && !result.months?.length && !result.snapToToday) {
+    const holiday = matchHoliday(raw);
+    if (holiday) {
+      result.dateRange = { start: holiday.start, end: holiday.end };
+      result.holidayDate = true; // soft filter — don't exclude festivals with missing dates
+    }
+  }
+
   return result;
 }
 
 function extractDates(text, result) {
   let remaining = text;
+
+  // Pattern A: Full-year keywords — "anytime", "whenever", "year round", "this year", etc.
+  const anytimePattern = /\b(anytime|any\s*time|any\s*date|whenever|year[\s-]*round|all\s*year|this\s*year)\b/gi;
+  if (anytimePattern.test(remaining)) {
+    result.dateRange = { start: "2026-01-01", end: "2026-12-31" };
+    remaining = remaining.replace(anytimePattern, " ");
+    return remaining;
+  }
+
+  // Pattern R: Relative-to-today keywords
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const fmtDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+  // "today", "now", "tonight" → snap slider to today, filter with ±5 day window
+  // No dateRange set — slider stays as single point, filterBySliderDate handles the window
+  const todayPattern = /\b(today|now|tonight)\b/gi;
+  if (todayPattern.test(remaining)) {
+    result.snapToToday = true;
+    remaining = remaining.replace(todayPattern, " ");
+    return remaining;
+  }
+
+  // "soon", "upcoming", "coming up" → today + 3 weeks
+  const soonPattern = /\b(soon|upcoming|coming\s+up)\b/gi;
+  if (soonPattern.test(remaining)) {
+    const end = new Date(now);
+    end.setDate(now.getDate() + 21);
+    result.dateRange = { start: fmtDate(now), end: fmtDate(end) };
+    remaining = remaining.replace(soonPattern, " ");
+    return remaining;
+  }
+
+  // "this week"
+  const thisWeekPattern = /\bthis\s+week\b/gi;
+  if (thisWeekPattern.test(remaining)) {
+    const dayOfWeek = now.getDay();
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - ((dayOfWeek + 6) % 7));
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    result.dateRange = { start: fmtDate(monday), end: fmtDate(sunday) };
+    remaining = remaining.replace(thisWeekPattern, " ");
+    return remaining;
+  }
+
+  // "next week"
+  const nextWeekPattern = /\bnext\s+week\b/gi;
+  if (nextWeekPattern.test(remaining)) {
+    const dayOfWeek = now.getDay();
+    const nextMon = new Date(now);
+    nextMon.setDate(now.getDate() + (7 - (dayOfWeek + 6) % 7));
+    const nextSun = new Date(nextMon);
+    nextSun.setDate(nextMon.getDate() + 6);
+    result.dateRange = { start: fmtDate(nextMon), end: fmtDate(nextSun) };
+    remaining = remaining.replace(nextWeekPattern, " ");
+    return remaining;
+  }
+
+  // "this weekend"
+  const thisWeekendPattern = /\bthis\s+weekend\b/gi;
+  if (thisWeekendPattern.test(remaining)) {
+    const dayOfWeek = now.getDay();
+    const saturday = new Date(now);
+    saturday.setDate(now.getDate() + ((6 - dayOfWeek + 7) % 7));
+    const sunday = new Date(saturday);
+    sunday.setDate(saturday.getDate() + 1);
+    result.dateRange = { start: fmtDate(saturday), end: fmtDate(sunday) };
+    remaining = remaining.replace(thisWeekendPattern, " ");
+    return remaining;
+  }
+
+  // "this month"
+  const thisMonthPattern = /\bthis\s+month\b/gi;
+  if (thisMonthPattern.test(remaining)) {
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    result.dateRange = { start: fmtDate(first), end: fmtDate(last) };
+    remaining = remaining.replace(thisMonthPattern, " ");
+    return remaining;
+  }
+
+  // "next month"
+  const nextMonthPattern = /\bnext\s+month\b/gi;
+  if (nextMonthPattern.test(remaining)) {
+    const first = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const last = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+    result.dateRange = { start: fmtDate(first), end: fmtDate(last) };
+    remaining = remaining.replace(nextMonthPattern, " ");
+    return remaining;
+  }
+
+  // "next N weeks", "next few weeks", "next couple weeks", "coming weeks"
+  const nextWeeksPattern = /\b(?:next|coming)\s+(\d+|few|couple(?:\s+of)?)\s+weeks\b/gi;
+  const nextWeeksMatch = remaining.match(nextWeeksPattern);
+  if (nextWeeksMatch) {
+    const inner = nextWeeksMatch[0].toLowerCase();
+    let n = 3; // default for "few"/"couple"
+    const numMatch = inner.match(/(\d+)/);
+    if (numMatch) n = parseInt(numMatch[1], 10);
+    const end = new Date(now);
+    end.setDate(now.getDate() + n * 7);
+    result.dateRange = { start: fmtDate(now), end: fmtDate(end) };
+    remaining = remaining.replace(nextWeeksPattern, " ");
+    return remaining;
+  }
+
+  // "next N months", "next few months", "next couple months", "coming months", "next months"
+  const nextMonthsPattern = /\b(?:next|coming)\s+(\d+|few|couple(?:\s+of)?)?\s*months\b/gi;
+  const nextMonthsMatch = remaining.match(nextMonthsPattern);
+  if (nextMonthsMatch) {
+    const inner = nextMonthsMatch[0].toLowerCase();
+    let n = 3; // default for "few"/"couple"/"next months"
+    const numMatch = inner.match(/(\d+)/);
+    if (numMatch) n = parseInt(numMatch[1], 10);
+    else if (/couple/.test(inner)) n = 2;
+    const end = new Date(now);
+    end.setMonth(now.getMonth() + n);
+    result.dateRange = { start: fmtDate(now), end: fmtDate(end) };
+    remaining = remaining.replace(nextMonthsPattern, " ");
+    return remaining;
+  }
 
   // Pattern S: Season keywords — "winter", "early summer", "late fall", etc.
   const seasonPattern = /(?<![-\w])(early|mid|late)?\s*(winter|spring|summer|fall|autumn)(?![-\w])/gi;
@@ -233,9 +566,12 @@ function extractDates(text, result) {
     return remaining;
   }
 
+  // Range separator: dash, en-dash, em-dash, "to", "through", "thru", "until"
+  const SEP = "(?:\\s*[-–—]\\s*|\\s+(?:to|through|thru|until)\\s+)";
+
   // Pattern 1: "Month DD - DD" (same month range)
   const sameMonthRange = remaining.match(
-    new RegExp("\\b(" + MONTH_RE + ")\\s+(\\d{1,2})\\s*[-–—]\\s*(\\d{1,2})\\b", "i")
+    new RegExp("\\b(" + MONTH_RE + ")\\s+(\\d{1,2})" + SEP + "(\\d{1,2})\\b", "i")
   );
   if (sameMonthRange) {
     const month = MONTH_NAMES[sameMonthRange[1].toLowerCase()];
@@ -251,7 +587,7 @@ function extractDates(text, result) {
 
   // Pattern 2: "Month DD - Month DD" (cross-month range)
   const crossMonthRange = remaining.match(
-    new RegExp("\\b(" + MONTH_RE + ")\\s+(\\d{1,2})\\s*[-–—]\\s*(" + MONTH_RE + ")\\s+(\\d{1,2})\\b", "i")
+    new RegExp("\\b(" + MONTH_RE + ")\\s+(\\d{1,2})" + SEP + "(" + MONTH_RE + ")\\s+(\\d{1,2})\\b", "i")
   );
   if (crossMonthRange) {
     const m1 = MONTH_NAMES[crossMonthRange[1].toLowerCase()];
@@ -268,7 +604,7 @@ function extractDates(text, result) {
 
   // Pattern 2b: Numeric date range "M/D - M/D" (e.g. "8/5 - 11/6")
   const numericRange = remaining.match(
-    /\b(\d{1,2})\/(\d{1,2})\s*[-–—]\s*(\d{1,2})\/(\d{1,2})\b/
+    new RegExp("\\b(\\d{1,2})/(\\d{1,2})" + SEP + "(\\d{1,2})/(\\d{1,2})\\b")
   );
   if (numericRange) {
     const m1 = parseInt(numericRange[1]) - 1; // 0-indexed
@@ -525,19 +861,23 @@ function scoreFestival(festival, parsed) {
   }
 
   // 4. Date match (0–20)
+  // When date comes from holiday awareness, treat as soft filter (bonus) if name also matches
+  // so festivals with missing dates (e.g. Macy's Thanksgiving Parade) still appear
   if (parsed.dateRange || parsed.months?.length) {
     hasAnyFilter = true;
     const dScore = dateScore(festival, parsed);
-    if (dScore === 0) return 0;
+    if (dScore === 0 && !parsed.holidayDate) return 0;
     score += dScore;
   }
 
   // 5. Category match (0–15)
+  // When name search is active (e.g. "rio carnival"), category is a bonus not a hard filter
+  // because the same word may match festival names, not just category metadata
   if (parsed.categories?.length) {
     hasAnyFilter = true;
     const cScore = categoryScore(festival, parsed);
-    if (cScore === 0) return 0;
-    score += cScore;
+    if (cScore === 0 && !parsed.name) return 0; // hard filter only without name
+    score += cScore; // soft bonus when name search is active
   }
 
   if (!hasAnyFilter) return 0;
@@ -706,8 +1046,13 @@ function dateScore(festival, parsed) {
     const qStart = new Date(parsed.dateRange.start);
     const qEnd = new Date(parsed.dateRange.end);
     if (qStart <= qEnd) {
-      // Normal range
-      if (fStart <= qEnd && fEnd >= qStart) return 20;
+      // Normal range — tiered scoring
+      const overlaps = fStart <= qEnd && fEnd >= qStart;
+      if (!overlaps) return 0;
+      // Festival entirely within query range → highest score
+      if (fStart >= qStart && fEnd <= qEnd) return 20;
+      // Festival overlaps but extends outside → medium score
+      return 12;
     } else {
       // Year-wrapping range (e.g., Dec 1 → Feb 28)
       if (fEnd >= qStart || fStart <= qEnd) return 20;
@@ -750,6 +1095,84 @@ function categoryScore(festival, parsed) {
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// ── Auto-capitalize known words ──
+
+// Build a lookup of all capitalizable words
+const CAPITALIZE_MAP = new Map();
+
+// Month names
+for (const [key] of Object.entries(MONTH_NAMES)) {
+  if (key.length >= 3) {
+    const canonical = key.charAt(0).toUpperCase() + key.slice(1);
+    CAPITALIZE_MAP.set(key, canonical);
+  }
+}
+
+// Country names — capitalize the typed word only, don't replace with aliases
+// e.g. "korea" → "Korea" (not "South Korea"), "us" → "US" (not "USA")
+for (const [lower, canonical] of ALL_COUNTRIES_LOWER.entries()) {
+  if (!canonical) continue;
+  // If key equals the lowered canonical, use canonical capitalization
+  if (lower === canonical.toLowerCase()) {
+    CAPITALIZE_MAP.set(lower, canonical);
+  } else {
+    // It's an alias — title-case the alias itself, don't replace with canonical
+    // Short abbreviations (≤3 chars) go UPPERCASE: us→US, uk→UK, uae→UAE, drc→DRC
+    const capitalized = lower.length <= 3
+      ? lower.toUpperCase()
+      : lower.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    CAPITALIZE_MAP.set(lower, capitalized);
+  }
+}
+
+// City names — capitalize the typed word only, don't expand aliases
+// e.g. "rio" → "Rio" (not "Rio de Janeiro"), always title-case (never all-caps)
+// Skip ambiguous short words like "la" (could be Spanish/French article, not Los Angeles)
+const SKIP_CAPITALIZE_CITIES = new Set(["la"]);
+for (const [lower, canonical] of KNOWN_CITIES.entries()) {
+  if (SKIP_CAPITALIZE_CITIES.has(lower)) continue;
+  if (lower === canonical.toLowerCase()) {
+    CAPITALIZE_MAP.set(lower, canonical);
+  } else {
+    // Alias — true abbreviations go UPPERCASE (ny→NY, sf→SF), real words title-case (rio→Rio)
+    // Heuristic: if alias appears as a word in canonical name, it's a real word, not an abbreviation
+    const isAbbrev = lower.length <= 3 && !canonical.toLowerCase().split(/\s+/).some(w => w === lower);
+    const capitalized = isAbbrev
+      ? lower.toUpperCase()
+      : lower.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    CAPITALIZE_MAP.set(lower, capitalized);
+  }
+}
+
+// Category names
+for (const cat of CATEGORY_NAMES) {
+  CAPITALIZE_MAP.set(cat.toLowerCase(), cat);
+}
+
+// Sort by key length (longest first) for multi-word matching
+const CAPITALIZE_ENTRIES = [...CAPITALIZE_MAP.entries()].sort((a, b) => b[0].length - a[0].length);
+
+/**
+ * Auto-capitalize known words in a search string.
+ * Returns the corrected string, or null if no changes needed.
+ */
+export function autoCapitalize(text) {
+  // First apply spell correction (skip last word — user may still be typing), then capitalize
+  let result = spellCorrect(text, true);
+  let changed = result !== text;
+  for (const [lower, canonical] of CAPITALIZE_ENTRIES) {
+    const pattern = new RegExp("\\b" + escapeRegex(lower) + "\\b", "gi");
+    result = result.replace(pattern, (match) => {
+      if (match !== canonical) {
+        changed = true;
+        return canonical;
+      }
+      return match;
+    });
+  }
+  return changed ? result : null;
 }
 
 // ── Placeholder examples ──
