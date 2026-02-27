@@ -59,6 +59,14 @@ let festivalPositions = null; // Float32Array(n*3), world-space positions on sur
 // Optional visibility filter — when set, only festivals passing this callback are shown/launched
 let _visibilityFilter = null; // (festival) => boolean
 
+// Search results set — when set, these festivals bypass date window checks
+let _searchResultSet = null; // Set<festival> or null
+
+// Range mode: when set, festivals within the full range are eligible (ignoring DATE_WINDOW)
+let rangeModeActive = false;
+let rangeDayStart = 0;
+let rangeDayEnd = 0;
+
 // Pre-computed per-festival: dayOfYear for eligible window
 let festivalDays = null; // Int16Array — day of year (0-364) per festival, -1 if no date
 
@@ -172,14 +180,36 @@ function getEligibleFestivals() {
   if (!festivals || !festivalDays) return [];
   const eligible = [];
   for (let i = 0; i < festivals.length; i++) {
+    const f = festivals[i];
+
+    // Search results bypass date window — always eligible
+    if (_searchResultSet && _searchResultSet.has(f)) {
+      eligible.push(i);
+      continue;
+    }
+
     const fDay = festivalDays[i];
     if (fDay < 0) continue; // no date
-    let diff = Math.abs(fDay - currentDayOfYear);
-    if (diff > 182) diff = 365 - diff; // wrap around year boundary
-    if (diff <= DATE_WINDOW) {
-      if (_visibilityFilter && !_visibilityFilter(festivals[i])) continue;
-      eligible.push(i);
+
+    let isInWindow;
+    if (rangeModeActive) {
+      // Range mode: check if festival day falls within [rangeDayStart, rangeDayEnd]
+      if (rangeDayStart <= rangeDayEnd) {
+        isInWindow = fDay >= rangeDayStart && fDay <= rangeDayEnd;
+      } else {
+        // Year-wrapping range (e.g., Dec 1 → Feb 28)
+        isInWindow = fDay >= rangeDayStart || fDay <= rangeDayEnd;
+      }
+    } else {
+      // Single-day mode with DATE_WINDOW
+      let diff = Math.abs(fDay - currentDayOfYear);
+      if (diff > 182) diff = 365 - diff;
+      isInWindow = diff <= DATE_WINDOW;
     }
+
+    if (!isInWindow) continue;
+    if (_visibilityFilter && !_visibilityFilter(festivals[i])) continue;
+    eligible.push(i);
   }
   return eligible;
 }
@@ -524,6 +554,40 @@ export function getFireworksPoints() {
 
 export function setVisibilityFilter(fn) {
   _visibilityFilter = fn;
+}
+
+export function setSearchResults(resultsArray) {
+  if (resultsArray && resultsArray.length > 0) {
+    _searchResultSet = new Set(resultsArray);
+  } else {
+    _searchResultSet = null;
+  }
+  // Reset launch timers so new eligible festivals fire immediately
+  if (festivalNextLaunch) festivalNextLaunch.fill(0);
+}
+
+export function setDayRange(startDay, endDay) {
+  rangeModeActive = true;
+  rangeDayStart = clamp(Math.round(startDay), 0, 364);
+  rangeDayEnd = clamp(Math.round(endDay), 0, 364);
+  // Reset all per-festival timers so eligible festivals launch immediately
+  if (festivalNextLaunch) festivalNextLaunch.fill(0);
+  // Pre-compute surface positions for click detection
+  if (festivalPositions && _heightSampler) {
+    const eligible = getEligibleFestivals();
+    lastEligible = eligible;
+    for (const idx of eligible) {
+      const { position } = computeSurfacePosition(festivals[idx]);
+      festivalPositions[idx * 3] = position.x;
+      festivalPositions[idx * 3 + 1] = position.y;
+      festivalPositions[idx * 3 + 2] = position.z;
+    }
+  }
+}
+
+export function clearDayRange() {
+  rangeModeActive = false;
+  if (festivalNextLaunch) festivalNextLaunch.fill(0);
 }
 
 // ── Click detection: find nearest festival to a world-space ray intersection ──

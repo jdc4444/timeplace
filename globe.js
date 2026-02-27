@@ -16,10 +16,13 @@ import {
   updateFireworks,
   setTerrainExaggeration as setFireworksTerrainExag,
   setDayOfYear as setFireworksDayOfYear,
+  setDayRange as setFireworksDayRange,
+  clearDayRange as clearFireworksDayRange,
   getFireworksPoints,
   hitTestFestival,
   getFestivals,
   setVisibilityFilter,
+  setSearchResults as setFireworksSearchResults,
 } from "./festival-fireworks.js";
 import {
   createLabelSystem,
@@ -28,6 +31,7 @@ import {
   setLabelTerrainExag,
   updateLabelVisibility,
 } from "./festival-labels.js";
+import { parseSearchQuery, searchFestivals, SEARCH_PLACEHOLDERS } from "./search.js";
 
 const ASSETS = {
   heightMapsUltra: [
@@ -503,7 +507,6 @@ const lightingResetEl = document.querySelector("#lighting-reset");
 // ── Bottom Bar DOM ──
 const temperatureBtnEl = document.querySelector("#temperature-btn");
 const festivalsBtnEl = document.querySelector("#festivals-btn");
-const daySliderEl = document.querySelector("#day-slider");
 const dateFullEl = document.querySelector("#date-full");
 const dateDayNameEl = document.querySelector("#date-day-name");
 
@@ -526,6 +529,25 @@ let _refreshTopList = null; // set by setupFestivalFireworks
 
 // ── Category Filter State ──
 const enabledCategories = new Set(); // supercategory names when active; empty = show all
+
+// ── Search State ──
+let searchActive = false;
+let searchResults = [];
+let currentSearchQuery = null;
+let _applyThermalDay = null; // exposed from setupThermalLayer closure
+let _showSearchResults = null; // set by setupSearch inside setupFestivalFireworks
+let freezeAutoSpinUntil = 0; // moved to module scope for search globe rotation
+
+// ── Custom Dual-Thumb Slider ──
+let rangeActive = false;
+let rangeStartIdx = 0;
+let rangeEndIdx = 0;
+let sliderMin = 0;
+let sliderMax = 364;
+const sliderEl = document.getElementById("custom-slider");
+const fillEl = document.getElementById("slider-fill");
+const thumbA = document.getElementById("thumb-a");
+const thumbB = document.getElementById("thumb-b");
 
 // Map every original category → one of 4 supercategories
 const SUPER_MAP = {
@@ -557,6 +579,66 @@ function thermalIndexToDayOfYear(idx) {
   if (isNaN(d.getTime())) return idx;
   const start = new Date(d.getFullYear(), 0, 0);
   return Math.floor((d - start) / (1000 * 60 * 60 * 24)) - 1;
+}
+
+// ── Custom Slider Helpers ──
+
+function idxToPx(idx) {
+  if (!sliderEl) return 0;
+  const w = sliderEl.offsetWidth;
+  const thumbHalf = 6;
+  const trackW = w - thumbHalf * 2;
+  const range = sliderMax - sliderMin || 1;
+  return thumbHalf + ((idx - sliderMin) / range) * trackW;
+}
+
+function pxToIdx(clientX) {
+  if (!sliderEl) return 0;
+  const rect = sliderEl.getBoundingClientRect();
+  const thumbHalf = 6;
+  const trackW = rect.width - thumbHalf * 2;
+  const frac = Math.max(0, Math.min(1, (clientX - rect.left - thumbHalf) / trackW));
+  return Math.round(sliderMin + frac * (sliderMax - sliderMin));
+}
+
+function positionThumbs() {
+  if (!sliderEl || !thumbA || !thumbB || !fillEl) return;
+  if (rangeActive) {
+    const aPx = idxToPx(rangeStartIdx);
+    const bPx = idxToPx(rangeEndIdx);
+    thumbA.style.left = aPx + "px";
+    thumbB.style.left = bPx + "px";
+    thumbB.classList.remove("is-hidden");
+    fillEl.style.left = aPx + "px";
+    fillEl.style.width = (bPx - aPx) + "px";
+  } else {
+    const px = idxToPx(thermalDay);
+    thumbA.style.left = px + "px";
+    thumbB.style.left = px + "px";
+    thumbB.classList.add("is-hidden");
+    fillEl.style.left = px + "px";
+    fillEl.style.width = "0px";
+  }
+}
+
+function activateRange(startIdx, endIdx) {
+  rangeActive = true;
+  rangeStartIdx = Math.min(startIdx, endIdx);
+  rangeEndIdx = Math.max(startIdx, endIdx);
+  thermalDay = rangeStartIdx;
+  positionThumbs();
+  updateDayLabel(thermalDay);
+  const startDoy = thermalIndexToDayOfYear(rangeStartIdx);
+  const endDoy = thermalIndexToDayOfYear(rangeEndIdx);
+  setFireworksDayRange(startDoy, endDoy);
+}
+
+function deactivateRange() {
+  rangeActive = false;
+  clearFireworksDayRange();
+  setFireworksDayOfYear(thermalIndexToDayOfYear(thermalDay));
+  positionThumbs();
+  updateDayLabel(thermalDay);
 }
 
 const REQUESTED_LIGHTING_PRESET = resolveLightingPresetFromQuery();
@@ -650,7 +732,6 @@ async function boot() {
   });
   setupPresetButtons(lightingControls);
 
-  let freezeAutoSpinUntil = 0;
   controls.addEventListener("start", () => {
     freezeAutoSpinUntil = performance.now() + 2300;
   });
@@ -662,6 +743,7 @@ async function boot() {
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
+    positionThumbs();
   };
   resize();
   window.addEventListener("resize", resize);
@@ -894,9 +976,30 @@ function setStatus(text, state) {
 
 function updateDayLabel(dayIndex) {
   if (!dateFullEl) return;
+
+  const utcOpts = { timeZone: "UTC" };
+
+  if (rangeActive) {
+    const startLabel = thermalData?.dateLabels?.[rangeStartIdx];
+    const endLabel = thermalData?.dateLabels?.[rangeEndIdx];
+    const ds = startLabel ? new Date(startLabel) : new Date(2026, 0, rangeStartIdx + 1);
+    const de = endLabel ? new Date(endLabel) : new Date(2026, 0, rangeEndIdx + 1);
+    const startYear = ds.getUTCFullYear();
+    const endYear = de.getUTCFullYear();
+    const yearStr = startYear === endYear ? ", " + startYear : ", " + startYear + "–" + endYear;
+    if (ds.getUTCMonth() === de.getUTCMonth() && startYear === endYear) {
+      dateFullEl.textContent = ds.toLocaleDateString("en-US", { month: "long", ...utcOpts })
+        + " " + ds.getUTCDate() + " – " + de.getUTCDate() + yearStr;
+    } else {
+      dateFullEl.textContent = ds.toLocaleDateString("en-US", { month: "long", day: "numeric", ...utcOpts })
+        + " – " + de.toLocaleDateString("en-US", { month: "long", day: "numeric", ...utcOpts }) + yearStr;
+    }
+    return;
+  }
+
   const label = thermalData?.dateLabels?.[dayIndex];
   const d = label ? new Date(label) : new Date(2026, 0, dayIndex + 1);
-  dateFullEl.textContent = d.toLocaleDateString("en-US", { month: "long", day: "numeric" }) + " 2026";
+  dateFullEl.textContent = d.toLocaleDateString("en-US", { month: "long", day: "numeric", ...utcOpts }) + " " + d.getUTCFullYear();
 }
 
 function setupThermalLayer(globeMaterial, landMaskData, landMaskWidth, landMaskHeight) {
@@ -954,9 +1057,7 @@ function setupThermalLayer(globeMaterial, landMaskData, landMaskWidth, landMaskH
     thermalDataCopy = new Float32Array(loaded.allTemps);
     thermalData = loaded;
 
-    if (daySliderEl) {
-      daySliderEl.max = String(loaded.numDays - 1);
-    }
+    sliderMax = loaded.numDays - 1;
 
     startAtlasBuild(
       loaded.allTemps, loaded.numDays,
@@ -975,29 +1076,123 @@ function setupThermalLayer(globeMaterial, landMaskData, landMaskWidth, landMaskH
     setStatus("Ready", "ok");
   }
 
+  // Expose applyThermalDay for search slider animation
+  _applyThermalDay = applyThermalDay;
+
   // Auto-enable thermal on startup
   (async () => {
     await ensureThermalData();
+    positionThumbs();
     updateDayLabel(thermalDay);
     applyThermalDay(thermalDay);
   })();
 
-  // Day slider (rAF-throttled)
-  let dayRaf = 0;
-  if (daySliderEl) {
-    daySliderEl.addEventListener("input", () => {
-      if (dayRaf) return;
-      dayRaf = requestAnimationFrame(() => {
-        dayRaf = 0;
-        thermalDay = parseInt(daySliderEl.value, 10);
-        updateDayLabel(thermalDay);
-        if (thermalEnabled) applyThermalDay(thermalDay);
-        setFireworksDayOfYear(thermalIndexToDayOfYear(thermalDay));
-        if (fireworksEnabled) updateLabels();
-        if (topListActive && _refreshTopList) _refreshTopList();
-      });
+  // ── Custom dual-thumb slider drag logic ──
+  let dragging = null; // null | "a" | "b"
+  let dragRaf = 0;
+
+  function applySliderUpdate(newIdx) {
+    if (rangeActive) {
+      if (dragging === "a") {
+        rangeStartIdx = Math.min(newIdx, rangeEndIdx);
+      } else if (dragging === "b") {
+        rangeEndIdx = Math.max(newIdx, rangeStartIdx);
+      }
+      thermalDay = newIdx;
+      const startDoy = thermalIndexToDayOfYear(rangeStartIdx);
+      const endDoy = thermalIndexToDayOfYear(rangeEndIdx);
+      setFireworksDayRange(startDoy, endDoy);
+    } else {
+      thermalDay = newIdx;
+      setFireworksDayOfYear(thermalIndexToDayOfYear(thermalDay));
+    }
+    positionThumbs();
+    updateDayLabel(thermalDay);
+    if (thermalEnabled && _applyThermalDay) _applyThermalDay(thermalDay);
+    if (fireworksEnabled) updateLabels();
+    if (topListActive && _refreshTopList) _refreshTopList();
+  }
+
+  function onPointerMove(e) {
+    if (!dragging) return;
+    if (dragRaf) return;
+    dragRaf = requestAnimationFrame(() => {
+      dragRaf = 0;
+      const idx = pxToIdx(e.clientX);
+      applySliderUpdate(idx);
     });
   }
+
+  function onPointerUp() {
+    dragging = null;
+    document.removeEventListener("pointermove", onPointerMove);
+    document.removeEventListener("pointerup", onPointerUp);
+  }
+
+  function startDrag(which, e) {
+    e.preventDefault();
+    dragging = which;
+    document.addEventListener("pointermove", onPointerMove);
+    document.addEventListener("pointerup", onPointerUp);
+    // Immediate update
+    const idx = pxToIdx(e.clientX);
+    applySliderUpdate(idx);
+  }
+
+  if (thumbA) {
+    thumbA.addEventListener("pointerdown", (e) => startDrag("a", e));
+  }
+  if (thumbB) {
+    thumbB.addEventListener("pointerdown", (e) => startDrag("b", e));
+  }
+
+  // Click on track (not on a thumb) — jump nearest thumb
+  if (sliderEl) {
+    sliderEl.addEventListener("pointerdown", (e) => {
+      if (e.target === thumbA || e.target === thumbB) return; // handled by thumb handlers
+      const idx = pxToIdx(e.clientX);
+      if (rangeActive) {
+        // Move whichever thumb is nearer
+        const distA = Math.abs(idx - rangeStartIdx);
+        const distB = Math.abs(idx - rangeEndIdx);
+        startDrag(distA <= distB ? "a" : "b", e);
+      } else {
+        startDrag("a", e);
+      }
+    });
+
+    // Keyboard support on thumbs
+    function onThumbKey(which, e) {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      const delta = e.key === "ArrowRight" ? 1 : -1;
+      if (rangeActive) {
+        if (which === "a") {
+          rangeStartIdx = Math.max(sliderMin, Math.min(rangeStartIdx + delta, rangeEndIdx));
+          thermalDay = rangeStartIdx;
+        } else {
+          rangeEndIdx = Math.max(rangeStartIdx, Math.min(rangeEndIdx + delta, sliderMax));
+          thermalDay = rangeEndIdx;
+        }
+        const startDoy = thermalIndexToDayOfYear(rangeStartIdx);
+        const endDoy = thermalIndexToDayOfYear(rangeEndIdx);
+        setFireworksDayRange(startDoy, endDoy);
+      } else {
+        thermalDay = Math.max(sliderMin, Math.min(thermalDay + delta, sliderMax));
+        setFireworksDayOfYear(thermalIndexToDayOfYear(thermalDay));
+      }
+      positionThumbs();
+      updateDayLabel(thermalDay);
+      if (thermalEnabled && _applyThermalDay) _applyThermalDay(thermalDay);
+      if (fireworksEnabled) updateLabels();
+    }
+
+    if (thumbA) thumbA.addEventListener("keydown", (e) => onThumbKey("a", e));
+    if (thumbB) thumbB.addEventListener("keydown", (e) => onThumbKey("b", e));
+  }
+
+  // Initial thumb position
+  positionThumbs();
 }
 
 // ── Festival Fireworks ──
@@ -1030,7 +1225,7 @@ function setupFestivalFireworks({
     createLabelSystem(globeGroup, heightSampler, landMaskData, landMaskWidth, landMaskHeight, terrainExaggeration, camera, renderer);
     getFireworksPoints().visible = true;
     buildCategoryFilters();
-    setVisibilityFilter(passesCategoryFilter);
+    setVisibilityFilter(passesVisibilityFilter);
     updateLabels();
     showTopFestivals();
     setStatus("Ready", "ok");
@@ -1059,7 +1254,11 @@ function setupFestivalFireworks({
         }
         // Always show the filtered list (even if we were on a detail view)
         updateLabels();
-        if (_refreshTopList) _refreshTopList();
+        if (searchActive && _showSearchResults) {
+          _showSearchResults();
+        } else if (_refreshTopList) {
+          _refreshTopList();
+        }
       });
       row.appendChild(btn);
     }
@@ -1068,11 +1267,21 @@ function setupFestivalFireworks({
     document.querySelector(".viewport").appendChild(row);
   }
 
-  // Check if a festival passes supercategory filter (none on = nothing shown)
+  // Check if a festival passes category filter (none on = nothing shown)
   function passesCategoryFilter(f) {
     if (enabledCategories.size === 0) return false;
     const cats = (f.cat || "").split(/[,;]/).map(s => s.trim()).filter(Boolean);
     return cats.some(c => enabledCategories.has(SUPER_MAP[c] || "Culture"));
+  }
+
+  // Combined visibility filter: search results OR category match
+  function passesVisibilityFilter(f) {
+    // When search is active, show search result festivals
+    if (searchActive && searchResults.length > 0) {
+      if (searchResults.includes(f)) return true;
+    }
+    // Otherwise fall back to category filter
+    return passesCategoryFilter(f);
   }
 
   function formatDateRange(start, end) {
@@ -1216,7 +1425,11 @@ function setupFestivalFireworks({
       festivalInfoNameEl.textContent = festival.name;
       festivalInfoNameEl.style.cursor = "pointer";
       festivalInfoNameEl.onclick = () => {
-        if (enabledCategories.size > 0 && _refreshTopList) _refreshTopList();
+        if (searchActive && _showSearchResults) {
+          _showSearchResults();
+        } else if (enabledCategories.size > 0 && _refreshTopList) {
+          _refreshTopList();
+        }
       };
     }
     if (festivalInfoLocationEl) {
@@ -1291,10 +1504,399 @@ function setupFestivalFireworks({
     const festival = hitTestFestival(raycaster, globeGroup);
     if (festival) {
       showFestivalInfo(festival);
-    } else {
+    } else if (!searchActive) {
       showTopFestivals();
     }
   });
+
+  // ── Search Integration ──
+  setupSearch();
+
+  function setupSearch() {
+    const input = document.getElementById("search-input");
+    const placeholderEl = document.getElementById("search-placeholder");
+    const cursorEl = document.getElementById("search-cursor");
+    const clearBtn = document.getElementById("search-clear");
+    if (!input) return;
+
+    // ── Blinking cursor positioning ──
+    function updateCursorPosition() {
+      if (!cursorEl || !placeholderEl) return;
+      cursorEl.style.left = placeholderEl.offsetWidth + "px";
+    }
+
+    // ── Cycling placeholder ──
+    let phIndex = 0;
+    let phInterval = null;
+
+    function cyclePlaceholder() {
+      if (!placeholderEl) return;
+      placeholderEl.classList.add("is-fading");
+      if (cursorEl) cursorEl.classList.add("is-hidden");
+      setTimeout(() => {
+        phIndex = (phIndex + 1) % SEARCH_PLACEHOLDERS.length;
+        placeholderEl.textContent = SEARCH_PLACEHOLDERS[phIndex];
+        placeholderEl.classList.remove("is-fading");
+        updateCursorPosition();
+        if (cursorEl) cursorEl.classList.remove("is-hidden");
+      }, 200);
+    }
+
+    phInterval = setInterval(cyclePlaceholder, 3000);
+    // Position cursor for initial placeholder text
+    requestAnimationFrame(updateCursorPosition);
+
+    input.addEventListener("focus", () => {
+      if (placeholderEl) placeholderEl.classList.add("is-hidden");
+      if (cursorEl) cursorEl.classList.add("is-hidden");
+      clearInterval(phInterval);
+      phInterval = null;
+    });
+
+    input.addEventListener("blur", () => {
+      if (!input.value && placeholderEl) {
+        placeholderEl.classList.remove("is-hidden");
+        if (cursorEl) {
+          cursorEl.classList.remove("is-hidden");
+          updateCursorPosition();
+        }
+        if (!phInterval) phInterval = setInterval(cyclePlaceholder, 3000);
+      }
+    });
+
+    // ── Search execution ──
+    let debounceTimer = 0;
+
+    input.addEventListener("input", () => {
+      clearTimeout(debounceTimer);
+      const val = input.value.trim();
+      clearBtn.style.display = val ? "" : "none";
+
+      // Hide placeholder + cursor when there's text (transparent bg means they'd show through)
+      if (val) {
+        if (placeholderEl) placeholderEl.classList.add("is-hidden");
+        if (cursorEl) cursorEl.classList.add("is-hidden");
+        clearInterval(phInterval);
+        phInterval = null;
+      } else {
+        // Restart cycling when text is cleared
+        if (!phInterval && placeholderEl) {
+          placeholderEl.classList.remove("is-hidden");
+          if (cursorEl) { cursorEl.classList.remove("is-hidden"); updateCursorPosition(); }
+          phInterval = setInterval(cyclePlaceholder, 3000);
+        }
+      }
+
+      if (!val) {
+        exitSearch();
+        return;
+      }
+      debounceTimer = setTimeout(() => executeSearch(val), 300);
+    });
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        clearTimeout(debounceTimer);
+        const val = input.value.trim();
+        if (val) executeSearch(val);
+      }
+      if (e.key === "Escape") {
+        input.value = "";
+        input.blur();
+        clearBtn.style.display = "none";
+        exitSearch();
+      }
+    });
+
+    clearBtn.addEventListener("click", () => {
+      input.value = "";
+      clearBtn.style.display = "none";
+      input.focus();
+      exitSearch();
+    });
+
+    function executeSearch(query) {
+      const festivals = getFestivals();
+      if (!festivals) return;
+
+      const parsed = parseSearchQuery(query);
+      currentSearchQuery = parsed;
+      const results = searchFestivals(festivals, parsed);
+      searchResults = results;
+      searchActive = true;
+
+      // Update slider if date info found; otherwise deactivate any previous range
+      if (parsed.dateRange || parsed.months?.length) {
+        updateSliderFromSearch(parsed);
+      } else {
+        deactivateRange();
+      }
+
+      // Push search results into fireworks system so they show on globe
+      setFireworksSearchResults(results);
+      if (fireworksEnabled) updateLabels();
+
+      // Rotate globe to results centroid
+      if (results.length > 0) {
+        rotateToResults(results);
+      }
+
+      // Display results
+      displaySearchResults(results, parsed);
+    }
+
+    function displaySearchResults(results, parsed) {
+      if (!festivalInfoEl) return;
+      topListActive = false;
+
+      // Hide single-festival detail elements
+      if (festivalInfoNameEl) { festivalInfoNameEl.textContent = ""; festivalInfoNameEl.style.display = "none"; festivalInfoNameEl.onclick = null; festivalInfoNameEl.style.cursor = ""; }
+      if (festivalInfoLocationEl) { festivalInfoLocationEl.textContent = ""; festivalInfoLocationEl.style.display = "none"; }
+      if (festivalInfoDateEl) { festivalInfoDateEl.textContent = ""; festivalInfoDateEl.style.display = "none"; }
+      if (festivalInfoTagsEl) { festivalInfoTagsEl.innerHTML = ""; festivalInfoTagsEl.style.display = "none"; }
+      if (festivalInfoDescEl) { festivalInfoDescEl.textContent = ""; festivalInfoDescEl.style.display = "none"; }
+      if (festivalInfoDetailsEl) { festivalInfoDetailsEl.textContent = ""; festivalInfoDetailsEl.style.display = "none"; }
+      const statsEl = festivalInfoEl.querySelector(".fi-stats");
+      if (statsEl) statsEl.style.display = "none";
+
+      // Get or create list container
+      let listEl = festivalInfoEl.querySelector(".fi-top-list");
+      if (!listEl) {
+        listEl = document.createElement("div");
+        listEl.className = "fi-top-list";
+        festivalInfoEl.appendChild(listEl);
+      }
+      listEl.innerHTML = "";
+
+      // Result count header
+      const header = document.createElement("div");
+      header.className = "fi-search-header";
+      header.textContent = results.length > 0
+        ? `${results.length} result${results.length === 1 ? "" : "s"}`
+        : "No festivals found";
+      listEl.appendChild(header);
+
+      // Render result entries (cap at 50)
+      const display = results.slice(0, 50);
+      for (const f of display) {
+        const loc = [f.city, f.country].filter(Boolean).join(", ");
+        const dateStr = formatDateRange(f.start, f.end);
+        const entry = document.createElement("div");
+        entry.className = "fi-top-entry";
+        entry.style.cursor = "pointer";
+        let html = `<div class="fi-name">${f.name}</div>
+          <div class="fi-location">${loc}</div>`;
+        if (dateStr) html += `<div class="fi-date">${dateStr}</div>`;
+        if (f.cat) {
+          const cats = f.cat.split(/[,;]/).map(c => c.trim()).filter(Boolean);
+          html += `<div class="fi-tags">${cats.map(c => `<span class="fi-tag">${c}</span>`).join("")}</div>`;
+        }
+        if (f.desc) html += `<p class="fi-desc">${f.desc}</p>`;
+        entry.innerHTML = html;
+        entry.addEventListener("click", () => showFestivalInfo(f));
+        listEl.appendChild(entry);
+      }
+
+      listEl.style.display = "";
+      festivalInfoEl.style.display = "";
+    }
+
+    // Expose displaySearchResults for category toggle re-filter
+    _showSearchResults = () => {
+      if (!searchActive || !currentSearchQuery) return;
+      const festivals = getFestivals();
+      if (!festivals) return;
+      // Re-run search (categories may have changed)
+      const results = searchFestivals(festivals, currentSearchQuery);
+      // If categories are active, additionally filter
+      if (enabledCategories.size > 0) {
+        const filtered = results.filter(passesCategoryFilter);
+        searchResults = filtered;
+        setFireworksSearchResults(filtered);
+        displaySearchResults(filtered, currentSearchQuery);
+      } else {
+        searchResults = results;
+        setFireworksSearchResults(results);
+        displaySearchResults(results, currentSearchQuery);
+      }
+      if (fireworksEnabled) updateLabels();
+    };
+
+    function exitSearch() {
+      searchActive = false;
+      searchResults = [];
+      currentSearchQuery = null;
+      _showSearchResults = null;
+      deactivateRange();
+      // Clear search results from fireworks system
+      setFireworksSearchResults(null);
+      // Update globe fireworks & labels back to non-search state
+      if (fireworksEnabled) updateLabels();
+      // Restore normal display
+      if (enabledCategories.size > 0 && _refreshTopList) {
+        _refreshTopList();
+      } else {
+        festivalInfoEl.style.display = "none";
+      }
+    }
+
+    function updateSliderFromSearch(parsed) {
+      if (!thermalData?.dateLabels) return;
+
+      const labels = thermalData.dateLabels;
+
+      function findClosestIdx(targetDate) {
+        let bestIdx = 0;
+        let bestDiff = Infinity;
+        for (let i = 0; i < labels.length; i++) {
+          const d = new Date(labels[i]);
+          const diff = Math.abs(d - targetDate);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestIdx = i;
+          }
+        }
+        return bestIdx;
+      }
+
+      let startDate, endDate;
+
+      if (parsed.dateRange?.start) {
+        startDate = new Date(parsed.dateRange.start);
+        endDate = parsed.dateRange.end
+          ? new Date(parsed.dateRange.end)
+          : startDate;
+        // Handle year-wrapping date ranges (e.g. winter: Dec 1 → Feb 28)
+        if (startDate > endDate) {
+          // Show the early-year portion on slider (Jan → end month)
+          // but keep the full wrapping range for fireworks
+          const earlyStart = new Date(2026, 0, 1);
+          const sliderStartIdx = findClosestIdx(earlyStart);
+          const sliderEndIdx = findClosestIdx(endDate);
+          // For fireworks range, use the wrapping day-of-year values
+          animateSliderTo(sliderStartIdx);
+          activateRange(sliderStartIdx, sliderEndIdx);
+          // Override fireworks range to include Dec too (wrapping)
+          const startDoy = thermalIndexToDayOfYear(findClosestIdx(startDate));
+          const endDoy = thermalIndexToDayOfYear(sliderEndIdx);
+          setFireworksDayRange(startDoy, endDoy);
+          if (fireworksEnabled) updateLabels();
+          return;
+        }
+      } else if (parsed.months?.length) {
+        const months = [...parsed.months].sort((a, b) => a - b);
+        // Check for wrapping months (e.g. [0, 1, 11] for winter)
+        const hasWrap = months.includes(11) && months.includes(0);
+        if (hasWrap) {
+          // Show the early-year portion on slider
+          const earlyMonths = months.filter(m => m < 6);
+          const lateMonths = months.filter(m => m >= 6);
+          const earlyEnd = earlyMonths.length > 0 ? Math.max(...earlyMonths) : 1;
+          startDate = new Date(2026, 0, 1);
+          endDate = new Date(2026, earlyEnd + 1, 0);
+          const sliderStartIdx = findClosestIdx(startDate);
+          const sliderEndIdx = findClosestIdx(endDate);
+          animateSliderTo(sliderStartIdx);
+          activateRange(sliderStartIdx, sliderEndIdx);
+          // For fireworks, include Dec too
+          const decStart = new Date(2026, Math.min(...lateMonths), 1);
+          const startDoy = thermalIndexToDayOfYear(findClosestIdx(decStart));
+          const endDoy = thermalIndexToDayOfYear(sliderEndIdx);
+          setFireworksDayRange(startDoy, endDoy);
+          if (fireworksEnabled) updateLabels();
+          return;
+        }
+        const minMonth = months[0];
+        const maxMonth = months[months.length - 1];
+        startDate = new Date(2026, minMonth, 1);
+        endDate = new Date(2026, maxMonth + 1, 0); // last day of max month
+      } else {
+        return;
+      }
+
+      const startIdx = findClosestIdx(startDate);
+      const endIdx = findClosestIdx(endDate);
+
+      if (endIdx > startIdx + 1) {
+        // Real range — show overlay and activate range mode
+        animateSliderTo(startIdx);
+        activateRange(startIdx, endIdx);
+        // Update labels after activating range
+        if (fireworksEnabled) updateLabels();
+      } else {
+        // Single day or very narrow range — no overlay
+        deactivateRange();
+        animateSliderTo(startIdx);
+      }
+    }
+
+    function animateSliderTo(targetIdx) {
+      const startIdx = thermalDay;
+      if (startIdx === targetIdx) return;
+      const duration = 600;
+      const startTime = performance.now();
+
+      function step(now) {
+        const t = Math.min(1, (now - startTime) / duration);
+        const eased = t * (2 - t); // ease-out quad
+        const current = Math.round(startIdx + (targetIdx - startIdx) * eased);
+
+        thermalDay = current;
+        positionThumbs();
+        updateDayLabel(current);
+        if (thermalEnabled && _applyThermalDay) _applyThermalDay(current);
+        if (!rangeActive) {
+          setFireworksDayOfYear(thermalIndexToDayOfYear(current));
+        }
+
+        if (t < 1) {
+          requestAnimationFrame(step);
+        } else {
+          if (fireworksEnabled) updateLabels();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function rotateToResults(results) {
+      if (results.length === 0) return;
+
+      // Compute centroid of top results
+      const n = Math.min(results.length, 20);
+      let sumLat = 0, sumLng = 0;
+      for (let i = 0; i < n; i++) {
+        sumLat += results[i].lat;
+        sumLng += results[i].lng;
+      }
+      const centLng = sumLng / n;
+
+      // Target rotation: convert longitude to globeGroup.rotation.y
+      // Globe has longitude increasing counter-clockwise when viewed from above
+      const targetRotY = -centLng * Math.PI / 180;
+
+      const currentRotY = globeGroup.rotation.y;
+      const duration = 800;
+      const startTime = performance.now();
+      const startRot = currentRotY;
+
+      // Find shortest rotation path
+      let delta = targetRotY - startRot;
+      // Normalize delta to [-PI, PI]
+      delta = ((delta + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+
+      // Freeze auto-spin during animation
+      freezeAutoSpinUntil = performance.now() + duration + 2000;
+
+      function step(now) {
+        const t = Math.min(1, (now - startTime) / duration);
+        const eased = t * t * (3 - 2 * t); // smoothstep
+        globeGroup.rotation.y = startRot + delta * eased;
+        if (t < 1) requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+  }
 }
 
 function setupTerrainExaggerationControl({ materialSettings, applyTerrain, onChange }) {
