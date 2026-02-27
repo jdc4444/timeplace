@@ -569,7 +569,11 @@ body {
 }
 
 @media (max-width: 640px) {
-  /* Remove white radial glow that washes out the top on mobile */
+  /* Flatten and darken background on mobile — no washed-out white */
+  body {
+    background: linear-gradient(180deg, #dfe2e8 0%, #c8ccd4 40%, #a8aeb8 100%);
+  }
+
   .viewport::before {
     background: none;
   }
