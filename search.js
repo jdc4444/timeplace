@@ -26,10 +26,22 @@ const MONTH_RE = "(?:january|jan|february|feb|march|mar|april|apr|may|june|jun|j
 
 // Category names used in the dataset
 const CATEGORY_NAMES = new Set([
+  // Core categories (match cat field directly)
   "Music", "Art", "Architecture", "Design", "Craft", "Film", "Literary",
   "Dance", "Theater", "Fashion", "Culture", "Religious", "Historical",
   "Folk", "Carnival", "Heritage", "National", "Holiday", "Education",
   "Sports", "Adventure", "Science", "Technology", "Food", "Nature", "Wellness",
+  // Sub-labels (matched via name/desc text search)
+  "Jazz", "Blues", "Rock", "Electronic", "Techno", "EDM", "Reggae", "Samba",
+  "Tango", "Opera", "Classical", "Indie", "Punk", "Metal", "Soul", "Funk",
+  "Gospel", "Flamenco", "Fado", "Hip-Hop",
+  "Wine", "Beer", "Coffee", "Chocolate", "Cheese", "Seafood", "Gastronomy",
+  "Whisky", "Sake", "Truffle", "BBQ", "Oyster",
+  "Sculpture", "Photography", "Graffiti", "Ceramics", "Puppet", "Circus",
+  "Comedy", "Poetry", "Cabaret",
+  "Lantern", "Fireworks", "Snow", "Kite", "Flower", "Garden", "Tulip",
+  "Illumination", "Parade", "Procession", "Marathon", "Surf",
+  "Indigenous", "Pride", "UNESCO",
 ]);
 
 // Map supercategory → all sub-categories it contains (for search scoring)
@@ -154,6 +166,7 @@ const KNOWN_CITIES = new Map([
   ["hanoi", "Hanoi"], ["bali", "Bali"], ["chiang mai", "Chiang Mai"],
   ["luang prabang", "Luang Prabang"], ["phnom penh", "Phnom Penh"],
   ["lhasa", "Lhasa"], ["taipei", "Taipei"], ["osaka", "Osaka"],
+  ["las vegas", "Las Vegas"], ["vegas", "Las Vegas"],
   ["la", "Los Angeles"], ["ny", "New York"], ["nyc", "New York"],
   ["sf", "San Francisco"], ["dc", "Washington"], ["nola", "New Orleans"],
 ]);
@@ -276,7 +289,7 @@ for (const w of ["festival", "festivals", "music", "art", "culture", "food", "fi
   "sports", "nature", "craft", "design", "fashion", "architecture", "adventure",
   "wellness", "science", "technology", "education", "historical", "folk", "national",
   // Time/date keywords — must be recognized so spell-check doesn't mangle them
-  "today", "now", "tonight", "soon", "upcoming", "coming", "anytime", "whenever",
+  "today", "now", "tonight", "tomorrow", "soon", "upcoming", "coming", "anytime", "whenever",
   "this", "next", "week", "month", "weekend", "year", "early", "mid", "late",
   "through", "thru", "until"]) {
   _addWord(w, w);
@@ -370,12 +383,9 @@ export function parseSearchQuery(query) {
     result.name = nameClean;
   }
 
-  // If no name was found but categories were extracted, those words might be event names
-  // e.g. "rio carnival" → city=Rio, category=Carnival, but no name
-  // Copy category words into name so they also match against festival names
-  if (!result.name && result.categories?.length) {
-    result.name = result.categories.join(" ");
-  }
+  // NOTE: categories stay as category filters, not copied into name.
+  // "music" → categories:["Music"], matches all music-tagged events.
+  // "rio carnival" → city=Rio, categories:["Carnival"], matches carnival events in Rio.
 
   // Pass 5: Holiday awareness — if no date was set, check if query matches a known holiday
   // This lets "thanksgiving", "valentines day europe", "diwali" etc. move the slider
@@ -393,9 +403,10 @@ export function parseSearchQuery(query) {
 function extractDates(text, result) {
   let remaining = text;
 
-  // Pattern A: Full-year keywords — "anytime", "whenever", "year round", "this year", etc.
-  const anytimePattern = /\b(anytime|any\s*time|any\s*date|whenever|year[\s-]*round|all\s*year|this\s*year)\b/gi;
+  // Pattern A: Full-year keywords — "anytime", "whenever", "year round", "this year", "soon", etc.
+  const anytimePattern = /\b(anytime|any\s*time|any\s*date|whenever|year[\s-]*round|all\s*year|this\s*year|soon|upcoming|coming\s*up)\b/gi;
   if (anytimePattern.test(remaining)) {
+    result.fullYear = true;
     result.dateRange = { start: "2026-01-01", end: "2026-12-31" };
     remaining = remaining.replace(anytimePattern, " ");
     return remaining;
@@ -406,12 +417,20 @@ function extractDates(text, result) {
   const pad = (n) => String(n).padStart(2, "0");
   const fmtDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-  // "today", "now", "tonight" → snap slider to today, filter with ±5 day window
-  // No dateRange set — slider stays as single point, filterBySliderDate handles the window
+  // "today", "now", "tonight" → snap slider to today, no date filtering
   const todayPattern = /\b(today|now|tonight)\b/gi;
   if (todayPattern.test(remaining)) {
     result.snapToToday = true;
     remaining = remaining.replace(todayPattern, " ");
+    return remaining;
+  }
+
+  // "tomorrow" → snap slider to tomorrow, no date filtering (use location fallback)
+  const tomorrowPattern = /\btomorrow\b/gi;
+  if (tomorrowPattern.test(remaining)) {
+    const tmrw = new Date(now); tmrw.setDate(now.getDate() + 1);
+    result.snapToDay = fmtDate(tmrw);
+    remaining = remaining.replace(tomorrowPattern, " ");
     return remaining;
   }
 
@@ -790,22 +809,21 @@ function resolveSeason(result) {
   const sortedMonths = [...months].sort((a, b) => a - b);
   // Handle winter wrapping (Dec=11, Jan=0, Feb=1)
   const hasWrap = sortedMonths.includes(11) && sortedMonths.includes(0);
-  let startMonth, endMonth, startYear = 2026, endYear = 2026;
+  let startMonth, endMonth;
   if (hasWrap) {
-    // Wrapping range: Dec 2026 → Jan/Feb 2027
+    // Wrapping range: keep same year so dateScore uses year-wrap logic (start > end)
+    // e.g. winter → start Dec 1, end Feb 28 (same year = intentional wrap signal)
     startMonth = 11;
-    startYear = 2026;
     endMonth = Math.max(...sortedMonths.filter(m => m < 6));
-    endYear = 2027;
   } else {
     startMonth = sortedMonths[0];
     endMonth = sortedMonths[sortedMonths.length - 1];
   }
 
-  const lastDay = new Date(endYear, endMonth + 1, 0).getDate();
+  const lastDay = new Date(2026, endMonth + 1, 0).getDate();
   result.dateRange = {
-    start: `${startYear}-${String(startMonth + 1).padStart(2, "0")}-01`,
-    end: `${endYear}-${String(endMonth + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
+    start: `2026-${String(startMonth + 1).padStart(2, "0")}-01`,
+    end: `2026-${String(endMonth + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
   };
   result.months = months;
 }
@@ -1040,7 +1058,12 @@ function dateScore(festival, parsed) {
 
   const fStart = new Date(festival.start);
   if (isNaN(fStart.getTime())) return 0;
-  const fEnd = festival.end ? new Date(festival.end) : fStart;
+  let fEnd = festival.end ? new Date(festival.end) : new Date(fStart);
+
+  // Handle cross-year festivals where end < start (e.g. Dec 30 → Jan 3 same year = data error)
+  if (fEnd < fStart) {
+    fEnd.setUTCFullYear(fEnd.getUTCFullYear() + 1);
+  }
 
   if (parsed.dateRange) {
     const qStart = new Date(parsed.dateRange.start);
@@ -1054,21 +1077,19 @@ function dateScore(festival, parsed) {
       // Festival overlaps but extends outside → medium score
       return 12;
     } else {
-      // Year-wrapping range (e.g., Dec 1 → Feb 28)
+      // Year-wrapping range (e.g., winter: Dec 1 → Feb 28 same year)
+      // Festival must overlap Dec→Dec31 OR Jan1→Feb28
       if (fEnd >= qStart || fStart <= qEnd) return 20;
     }
     return 0;
   }
 
   if (parsed.months?.length) {
+    // Use full date-range overlap (not just month numbers) to respect the year
     for (const m of parsed.months) {
-      const fStartMonth = fStart.getMonth();
-      const fEndMonth = fEnd.getMonth();
-      if (fStartMonth <= fEndMonth) {
-        if (m >= fStartMonth && m <= fEndMonth) return 20;
-      } else {
-        if (m >= fStartMonth || m <= fEndMonth) return 20;
-      }
+      const mStart = new Date(Date.UTC(2026, m, 1));
+      const mEnd = new Date(Date.UTC(2026, m + 1, 0)); // last day of month
+      if (fStart <= mEnd && fEnd >= mStart) return 20;
     }
     return 0;
   }
@@ -1077,15 +1098,19 @@ function dateScore(festival, parsed) {
 }
 
 function categoryScore(festival, parsed) {
-  if (!festival.cat) return 0;
-  const festCats = festival.cat.split(/[,;]/).map(c => c.trim()).filter(Boolean);
+  const festCats = (festival.cat || "").split(/[,;]/).map(c => c.trim()).filter(Boolean);
   const festSupers = festCats.map(c => SUPER_MAP[c] || "Culture");
 
   for (const searchCat of parsed.categories) {
+    // Exact subcategory match
     if (festCats.some(fc => fc.toLowerCase() === searchCat.toLowerCase())) return 15;
+    // Supercategory match
     if (festSupers.some(fs => fs.toLowerCase() === searchCat.toLowerCase())) return 12;
     const searchSuper = SUPER_MAP[searchCat];
     if (searchSuper && festSupers.includes(searchSuper)) return 12;
+    // Text match: category word appears in name or description (e.g. "music" in "folk music festival")
+    const text = ((festival.name || "") + " " + (festival.desc || "")).toLowerCase();
+    if (text.includes(searchCat.toLowerCase())) return 8;
   }
 
   return 0;

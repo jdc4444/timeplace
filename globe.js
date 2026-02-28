@@ -34,6 +34,9 @@ import {
 } from "./festival-labels.js";
 import { parseSearchQuery, searchFestivals, autoCapitalize, SEARCH_PLACEHOLDERS } from "./search.js";
 
+// Module-level flag: suppresses controls.update() during zoom animations
+let _zoomAnimating = false;
+
 const ASSETS = {
   heightMapsUltra: [
     "./assets/etopo1_height_16384.png",
@@ -767,6 +770,21 @@ async function boot() {
 
   controls.addEventListener("start", () => {
     freezeAutoSpinUntil = performance.now() + 2300;
+    // User took manual control — clear saved zoom state and smoothly reset globe tilt
+    preDetailZoom = null;
+    preDetailTilt = null;
+    // Smoothly decay globe tilt back to 0 so snapping works from a clean base
+    const startTilt = globeGroup.rotation.x;
+    if (Math.abs(startTilt) > 0.01) {
+      const tiltStart = performance.now();
+      const tiltDuration = 600;
+      function resetTilt(now) {
+        const t = Math.min(1, (now - tiltStart) / tiltDuration);
+        globeGroup.rotation.x = startTilt * (1 - t * t); // ease-in quad
+        if (t < 1) requestAnimationFrame(resetTilt);
+      }
+      requestAnimationFrame(resetTilt);
+    }
   });
 
   const resize = () => {
@@ -1034,7 +1052,7 @@ async function boot() {
       updateLabelVisibility(camera, globeGroup);
     }
 
-    controls.update();
+    if (!_zoomAnimating) controls.update();
     lightingRig.update();
     renderer.render(scene, camera);
     renderFrameId = requestAnimationFrame(render);
@@ -1361,6 +1379,8 @@ function setupFestivalFireworks({
         document.querySelectorAll(".cat-toggle").forEach(b => {
           b.classList.toggle("is-on", enabledCategories.has(b.dataset.cat));
         });
+        // Zoom out if we were in detail view
+        zoomOutFromDetail();
         // Refresh the list
         updateLabels();
         if (searchActive && _showSearchResults) {
@@ -1401,16 +1421,24 @@ function setupFestivalFireworks({
   function formatDateRange(start, end) {
     if (!start) return "";
     const opts = { month: "long", day: "numeric", year: "numeric" };
-    const s = new Date(start);
+    const s = _parseLocal(start);
     if (isNaN(s.getTime())) return "";
     const sStr = s.toLocaleDateString("en-US", opts);
     if (!end || end === start) return sStr;
-    const e = new Date(end);
+    let e = _parseLocal(end);
     if (isNaN(e.getTime()) || e.getTime() === s.getTime()) return sStr;
+    // Handle cross-year festivals where end < start (e.g. Dec 30 → Jan 3)
+    if (e < s) e = new Date(e.getFullYear() + 1, e.getMonth(), e.getDate());
     if (s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear()) {
       return `${s.toLocaleDateString("en-US", { month: "long" })} ${s.getDate()}–${e.getDate()}, ${s.getFullYear()}`;
     }
     return `${sStr} – ${e.toLocaleDateString("en-US", opts)}`;
+  }
+  // Parse "YYYY-MM-DD" as local time (avoid UTC→local timezone shift)
+  function _parseLocal(s) {
+    if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(s)) return new Date(s);
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d);
   }
 
   // Extract descriptive keyword tags from festival name + description
@@ -1494,11 +1522,12 @@ function setupFestivalFireworks({
       const dur = endDoy >= startDoy ? endDoy - startDoy + 1 : 1;
       if (dur > 30) {
         // Only show during the start month or end month
-        const startDate = new Date(f.start);
-        const endDate = f.end ? new Date(f.end) : startDate;
+        // Parse month from string to avoid UTC→local timezone shift
+        const sMonth = parseInt((f.start || "").split("-")[1], 10) - 1;
+        const eMonth = parseInt((f.end || f.start || "").split("-")[1], 10) - 1;
         const currentDate = new Date(2026, 0, currentDoy + 1);
         const curMonth = currentDate.getMonth();
-        return curMonth === startDate.getMonth() || curMonth === endDate.getMonth();
+        return curMonth === sMonth || curMonth === eMonth;
       }
 
       return currentDoy >= startDoy && currentDoy <= endDoy;
@@ -1562,7 +1591,7 @@ function setupFestivalFireworks({
       }
       if (f.desc) html += `<p class="fi-desc">${f.desc}</p>`;
       entry.innerHTML = html;
-      entry.addEventListener("click", () => showFestivalInfo(f));
+      entry.addEventListener("click", () => showFestivalInfo(f, { zoom: true }));
       listEl.appendChild(entry);
     }
     listEl.style.display = "";
@@ -1582,34 +1611,163 @@ function setupFestivalFireworks({
   function rotateToResults(results) {
     if (results.length === 0) return;
     const n = Math.min(results.length, 20);
-    let sumLng = 0;
-    for (let i = 0; i < n; i++) sumLng += results[i].lng;
+    let sumLng = 0, sumLat = 0;
+    for (let i = 0; i < n; i++) { sumLng += results[i].lng; sumLat += results[i].lat; }
     const centLng = sumLng / n;
+    const centLat = sumLat / n;
     const cameraAzimuth = Math.atan2(camera.position.x, camera.position.z);
     const targetRotY = -centLng * Math.PI / 180 - Math.PI / 2 + cameraAzimuth;
-    const startRot = globeGroup.rotation.y;
-    const duration = 800;
+    const startRotY = globeGroup.rotation.y;
+    const duration = 1200;
     const startTime = performance.now();
-    let delta = targetRotY - startRot;
-    delta = ((delta + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    let deltaY = targetRotY - startRotY;
+    deltaY = ((deltaY + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    // Tilt to average latitude (gentler than zoomToFestival — scale down for zoomed-out view)
+    const dist = camera.position.length();
+    const tiltScale = dist > 5 ? 0.4 : 0.7; // less tilt when zoomed out
+    const targetRotX = centLat * Math.PI / 180 * tiltScale;
+    const startRotX = globeGroup.rotation.x;
+    const deltaX = targetRotX - startRotX;
     freezeAutoSpinUntil = performance.now() + duration + 2000;
     function step(now) {
       const t = Math.min(1, (now - startTime) / duration);
-      const eased = t * t * (3 - 2 * t);
-      globeGroup.rotation.y = startRot + delta * eased;
+      const eased = easeOutQuint(t);
+      globeGroup.rotation.y = startRotY + deltaY * eased;
+      globeGroup.rotation.x = startRotX + deltaX * eased;
       if (t < 1) requestAnimationFrame(step);
     }
     requestAnimationFrame(step);
   }
 
-  function showFestivalInfo(festival) {
+  // ── Detail-view zoom ──
+  let preDetailZoom = null; // saved camera distance before zoom-in
+  let preDetailTilt = null; // saved globe rotation.x before zoom-in
+  let zoomAnimId = 0;       // cancellation token for zoom animation
+
+  // Easing: fast start, long gentle deceleration — feels like a camera settling
+  function easeOutQuint(t) { return 1 - Math.pow(1 - t, 5); }
+  // Easing: gentle start, gentle end — smooth departure
+  function easeInOutQuart(t) {
+    return t < 0.5 ? 8 * t * t * t * t : 1 - Math.pow(-2 * t + 2, 4) / 2;
+  }
+
+  function zoomToFestival(festival) {
+    if (festival.lat == null || festival.lng == null) return;
+    const id = ++zoomAnimId;
+    _zoomAnimating = true;
+
+    // Save current distance and tilt so we can restore on exit
+    const startDist = camera.position.length();
+    if (!preDetailZoom) preDetailZoom = startDist;
+    if (preDetailTilt == null) preDetailTilt = globeGroup.rotation.x;
+
+    const mobile = window.matchMedia("(max-width: 640px)").matches;
+    const targetDist = mobile ? 4.2 : 3.8;
+    const duration = 1800;
+    const startTime = performance.now();
+
+    // Globe rotation — offset longitude slightly so the city drifts across screen
+    const offsetDeg = mobile ? 6 : 10;
+    const centLng = festival.lng + offsetDeg;
+    const cameraAzimuth = Math.atan2(camera.position.x, camera.position.z);
+    const targetRotY = -centLng * Math.PI / 180 - Math.PI / 2 + cameraAzimuth;
+    const startRotY = globeGroup.rotation.y;
+    let deltaY = targetRotY - startRotY;
+    deltaY = ((deltaY + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+
+    // Tilt globe for latitude — use actual latitude in radians
+    const targetRotX = festival.lat * Math.PI / 180;
+    const startRotX = globeGroup.rotation.x;
+    const deltaX = targetRotX - startRotX;
+
+    // Capture initial camera direction so it stays stable through animation
+    const startDir = camera.position.clone().normalize();
+
+    freezeAutoSpinUntil = performance.now() + duration + 4000;
+
+    function step(now) {
+      if (id !== zoomAnimId) { _zoomAnimating = false; return; }
+      const t = Math.min(1, (now - startTime) / duration);
+      // Use easeOutQuint for the "landing" — fast approach, long gentle settle
+      const e = easeOutQuint(t);
+
+      // Zoom camera along its original direction (stable, no drift from controls)
+      const dist = startDist + (targetDist - startDist) * e;
+      camera.position.copy(startDir.clone().multiplyScalar(dist));
+
+      // Rotate globe — use slightly faster easing so rotation leads the zoom
+      const eRot = easeOutQuint(Math.min(1, t * 1.15));
+      globeGroup.rotation.y = startRotY + deltaY * eRot;
+      globeGroup.rotation.x = startRotX + deltaX * eRot;
+
+      if (t < 1) {
+        requestAnimationFrame(step);
+      } else {
+        _zoomAnimating = false;
+      }
+    }
+    requestAnimationFrame(step);
+  }
+
+  const defaultCameraDist = window.matchMedia("(max-width: 640px)").matches ? 8.0 : 6.0;
+
+  function zoomOutFromDetail() {
+    // Determine target distance: saved pre-detail zoom, or default if user manually zoomed in
+    const startDist = camera.position.length();
+    let targetDist;
+    if (preDetailZoom != null) {
+      targetDist = preDetailZoom;
+    } else if (startDist < defaultCameraDist - 0.3) {
+      // User is zoomed in past default (e.g. via scroll wheel) — zoom back to default
+      targetDist = defaultCameraDist;
+    } else {
+      return; // already at or beyond default distance — nothing to do
+    }
+    const id = ++zoomAnimId;
+    _zoomAnimating = true;
+
+    const startRotX = globeGroup.rotation.x;
+    // Restore tilt to what it was before zoom-in, or keep current if no saved tilt
+    const targetRotX = preDetailTilt != null ? preDetailTilt : startRotX;
+    const duration = 1400;
+    const startTime = performance.now();
+
+    const startDir = camera.position.clone().normalize();
+
+    freezeAutoSpinUntil = performance.now() + duration + 2000;
+    preDetailZoom = null;
+    preDetailTilt = null;
+
+    function step(now) {
+      if (id !== zoomAnimId) { _zoomAnimating = false; return; }
+      const t = Math.min(1, (now - startTime) / duration);
+      // Smooth departure — gentle in and out
+      const e = easeInOutQuart(t);
+
+      const dist = startDist + (targetDist - startDist) * e;
+      camera.position.copy(startDir.clone().multiplyScalar(dist));
+
+      globeGroup.rotation.x = startRotX + (targetRotX - startRotX) * e;
+
+      if (t < 1) {
+        requestAnimationFrame(step);
+      } else {
+        _zoomAnimating = false;
+      }
+    }
+    requestAnimationFrame(step);
+  }
+
+  function showFestivalInfo(festival, { zoom = false } = {}) {
     if (!festivalInfoEl || !festival) return;
     hideTopList();
 
-    // Snap globe to festival location
-    if (festival.lat != null && festival.lng != null) {
-      rotateToResults([festival]);
-    }
+    // Show only this festival's firework on the globe
+    setFireworksSearchResults([festival]);
+    if (fireworksEnabled) updateLabels();
+
+    // Only zoom in when triggered from text list, not from firework click
+    if (zoom) zoomToFestival(festival);
 
     // Restore display on all detail elements
     if (festivalInfoNameEl) {
@@ -1617,6 +1775,16 @@ function setupFestivalFireworks({
       festivalInfoNameEl.textContent = festival.name;
       festivalInfoNameEl.style.cursor = "pointer";
       festivalInfoNameEl.onclick = () => {
+        // Place-based search: stay zoomed in. Otherwise zoom out.
+        const hasPlace = currentSearchQuery?.cities?.length || currentSearchQuery?.countries?.length || currentSearchQuery?.subregions?.length;
+        if (searchActive && hasPlace) {
+          preDetailZoom = null; preDetailTilt = null; // clear without animating
+        } else {
+          zoomOutFromDetail();
+        }
+        // Clear single-festival firework filter before restoring list
+        setFireworksSearchResults(null);
+        if (fireworksEnabled) updateLabels();
         if (searchActive && _showSearchResults) {
           _showSearchResults();
         } else if (enabledCategories.size > 0 && _refreshTopList) {
@@ -1696,7 +1864,14 @@ function setupFestivalFireworks({
     const festival = hitTestFestival(raycaster, globeGroup);
     if (festival) {
       showFestivalInfo(festival);
+    } else if (searchActive && _showSearchResults) {
+      const hasPlace = currentSearchQuery?.cities?.length || currentSearchQuery?.countries?.length || currentSearchQuery?.subregions?.length;
+      if (hasPlace) { preDetailZoom = null; preDetailTilt = null; } else { zoomOutFromDetail(); }
+      _showSearchResults();
     } else if (!searchActive) {
+      zoomOutFromDetail();
+      setFireworksSearchResults(null);
+      if (fireworksEnabled) updateLabels();
       showTopFestivals();
     }
   });
@@ -1762,11 +1937,17 @@ function setupFestivalFireworks({
     let skipNextInput = false;
 
     input.addEventListener("input", () => {
-      if (skipNextInput) { skipNextInput = false; return; }
       clearTimeout(debounceTimer);
       clearTimeout(capitalizeTimer);
       const val = input.value.trim();
       clearBtn.style.display = val ? "" : "none";
+
+      // Skip input events triggered by auto-capitalize (but still handle empty → exit)
+      if (skipNextInput) {
+        skipNextInput = false;
+        if (!val) { exitSearch(); }
+        return;
+      }
 
       // Hide placeholder + cursor when there's text (transparent bg means they'd show through)
       if (val) {
@@ -1856,6 +2037,14 @@ function setupFestivalFireworks({
       const parsed = parseSearchQuery(query);
       currentSearchQuery = parsed;
 
+      // Place-based search → preserve zoom. Non-place → zoom out to show globe.
+      const hasPlace = parsed.cities?.length || parsed.countries?.length || parsed.subregions?.length;
+      if (hasPlace) {
+        preDetailZoom = null; preDetailTilt = null; // clear detail state without animating
+      } else {
+        zoomOutFromDetail();
+      }
+
       let results = searchFestivals(festivals, parsed);
 
       // Fix 9: Filter low-confidence when many results
@@ -1865,46 +2054,83 @@ function setupFestivalFireworks({
 
       searchActive = true;
 
-      // Auto-enable all categories if none are selected so search results show
-      if (enabledCategories.size === 0 && results.length > 0) {
-        for (const cat of SUPER_CATEGORIES) {
-          enabledCategories.add(cat);
-        }
-        document.querySelectorAll(".cat-toggle").forEach(btn => {
-          btn.classList.add("is-on");
-        });
-      }
+      // Deactivate all categories on search entry — search shows everything by default
+      // User can re-enable a category during search to filter
+      enabledCategories.clear();
+      document.querySelectorAll(".cat-toggle").forEach(btn => {
+        btn.classList.remove("is-on");
+      });
+
+      // Detect query types
+      const hasExplicitDates = (parsed.dateRange && !parsed.fullYear && !parsed.snapToToday && !parsed.snapToDay) || parsed.months?.length;
+      // Location-only = city/country without explicit dates (not "china december")
+      const isLocationQuery = (parsed.cities?.length || parsed.countries?.length)
+        && !parsed.name && !hasExplicitDates;
 
       // Slider + date behavior depends on query type:
-      // - Has explicit dates ("summer", "march") → move slider to that range
-      // - "today"/"now" → snap slider to today, filter by ±5 day window
-      // - Has name ("SXSW", "Venice Biennale") but no dates → move slider to results' dates
-      // - Location/category only ("paris", "music in Spain") → filter by current slider position
-      if (parsed.dateRange || parsed.months?.length) {
-        updateSliderFromSearch(parsed);
-      } else if (parsed.snapToToday) {
-        // Snap slider to today (single point, no range), then filter by slider window
+      const hasTimeKeyword = !!(parsed.snapToToday || parsed.snapToDay || parsed.fullYear);
+      if (isLocationQuery && results.length > 0) {
+        // City/country search (incl. "anytime"/"soon"/"today"/"tomorrow")
+        // Filter past events, sort by soonest only with time keywords
         deactivateRange();
-        const now = new Date();
-        const jan1 = new Date(2026, 0, 1);
-        const todayCal = Math.max(0, Math.min(364, Math.round((now - jan1) / 86400000)));
-        animateSliderTo(todayCal);
-        results = filterBySliderDate(results);
+        const future = filterPastEvents(results);
+        if (future.length > 0) {
+          parsed._locationQuery = true; // flag: don't re-filter by slider on click-back
+          // Determine reference day: "tomorrow" → tomorrow, "today" → today, else → today
+          const jan1 = new Date(2026, 0, 1);
+          let refDate;
+          if (parsed.snapToDay) {
+            const [y, m, d] = parsed.snapToDay.split("-").map(Number);
+            refDate = new Date(y, m - 1, d);
+          } else {
+            refDate = new Date();
+          }
+          const refCal = Math.max(0, Math.min(364, Math.round((refDate - jan1) / 86400000)));
+          // Check if any event is active on the reference day
+          const hasActiveOnRef = future.some(f => {
+            if (!f.start) return false;
+            const fS = parseLocalDate(f.start);
+            const fE = f.end ? parseLocalDate(f.end) : fS;
+            const fSCal = Math.max(0, Math.min(364, Math.round((fS - jan1) / 86400000)));
+            const fECal = Math.max(0, Math.min(364, Math.round((fE - jan1) / 86400000)));
+            return fSCal <= refCal && fECal >= refCal;
+          });
+          if (hasActiveOnRef) {
+            // Event active on ref day — keep score ranking, snap slider there
+            results = future;
+            animateSliderTo(refCal);
+          } else {
+            // No event on ref day — sort by soonest, move slider to nearest
+            results = sortBySoonest(future);
+            parsed._soonest = true;
+            moveSliderToResults(results);
+          }
+        } else {
+          results._allPast = true;
+          parsed._locationQuery = true;
+        }
+      } else if (hasExplicitDates) {
+        // Explicit dates ("summer", "march", "june") → position slider based on query
+        const future = filterPastEvents(results);
+        if (future.length > 0) {
+          results = future;
+        } else {
+          results._allPast = true;
+        }
+        updateSliderFromSearch(parsed);
       } else if (parsed.name && results.length > 0) {
         if (results.length <= 3) {
-          // Specific event (few results) → move slider to event dates
           moveSliderToResults(results);
         } else {
-          // Broad name search (many results) → check if any overlap current slider
-          // If yes → keep slider, filter to nearby. If no → show all (full year).
+          // Broad name search — check if any overlap current slider
           const jan1 = new Date(2026, 0, 1);
           const windowHalf = rangeActive ? 0 : 5;
           const slStart = rangeActive ? rangeStartIdx : Math.max(0, thermalDay - windowHalf);
           const slEnd = rangeActive ? rangeEndIdx : Math.min(364, thermalDay + windowHalf);
           const nearbyResults = results.filter(f => {
             if (!f.start) return true;
-            const fS = new Date(f.start);
-            const fE = f.end ? new Date(f.end) : fS;
+            const fS = parseLocalDate(f.start);
+            const fE = f.end ? parseLocalDate(f.end) : fS;
             const fSCal = Math.max(0, Math.min(364, Math.round((fS - jan1) / 86400000)));
             const fECal = Math.max(0, Math.min(364, Math.round((fE - jan1) / 86400000)));
             return fSCal <= slEnd && fECal >= slStart;
@@ -1912,18 +2138,63 @@ function setupFestivalFireworks({
           if (nearbyResults.length > 0) {
             results = nearbyResults;
           } else {
+            // No results near current slider — move slider to soonest result
             deactivateRange();
+            const future = filterPastEvents(results);
+            moveSliderToResults(future.length > 0 ? sortBySoonest(future) : results);
           }
         }
       } else {
         deactivateRange();
-        // Location/category-only: filter by current slider position
-        results = filterBySliderDate(results);
+        // Snap slider for "today"/"tomorrow" without a place
+        if (parsed.snapToToday || parsed.snapToDay) {
+          const jan1 = new Date(2026, 0, 1);
+          let targetDate;
+          if (parsed.snapToDay) {
+            const [y, m, d] = parsed.snapToDay.split("-").map(Number);
+            targetDate = new Date(y, m - 1, d);
+          } else {
+            targetDate = new Date();
+          }
+          const cal = Math.max(0, Math.min(364, Math.round((targetDate - jan1) / 86400000)));
+          thermalDay = cal; // set immediately so filterBySliderDate uses it
+          animateSliderTo(cal);
+          results = filterBySliderDate(results);
+        } else if (parsed.categories?.length && !parsed.name && results.length > 0) {
+          // Category-only (e.g. "chocolate", "jazz") → show soonest
+          const future = filterPastEvents(results);
+          if (future.length > 0) {
+            results = sortBySoonest(future);
+            parsed._soonest = true;
+            moveSliderToResults(results);
+          } else {
+            results._allPast = true;
+          }
+        } else {
+          // Generic: filter by current slider position
+          results = filterBySliderDate(results);
+        }
       }
 
-      // Apply category filter if a vertical is selected
+      // Filter by category if user has a category active during search
       if (enabledCategories.size > 0) {
         results = results.filter(passesCategoryFilter);
+      }
+
+      // Fallback: place + date with no results → re-search place-only, sort soonest
+      if (results.length === 0 && hasPlace && hasExplicitDates) {
+        // Re-search without date constraint
+        const fallbackParsed = { ...parsed, dateRange: null, months: [] };
+        let fallback = searchFestivals(festivals, fallbackParsed);
+        if (fallback.length > 5) fallback = fallback.filter(f => (f.qi || 0) >= 30);
+        const future = filterPastEvents(fallback);
+        if (future.length > 0) {
+          results = sortBySoonest(future);
+          parsed._locationQuery = true;
+          parsed._soonest = true;
+          deactivateRange();
+          moveSliderToResults(results);
+        }
       }
 
       searchResults = results;
@@ -1932,8 +2203,8 @@ function setupFestivalFireworks({
       setFireworksSearchResults(results);
       if (fireworksEnabled) updateLabels();
 
-      // Rotate globe to results centroid
-      if (results.length > 0) {
+      // Rotate globe to results centroid — only for location-based queries
+      if (results.length > 0 && hasPlace) {
         rotateToResults(results);
       }
 
@@ -1967,9 +2238,15 @@ function setupFestivalFireworks({
       // Result count header
       const header = document.createElement("div");
       header.className = "fi-search-header";
-      header.textContent = results.length > 0
-        ? `${results.length} result${results.length === 1 ? "" : "s"}`
-        : "No festivals found";
+      if (results._allPast) {
+        header.textContent = `Past`;
+      } else if (results.length > 0 && parsed?._soonest) {
+        header.textContent = `Soonest`;
+      } else if (results.length > 0) {
+        header.textContent = `${results.length} result${results.length === 1 ? "" : "s"}`;
+      } else {
+        header.textContent = "No festivals found";
+      }
       listEl.appendChild(header);
 
       // Render result entries (cap at 50)
@@ -1991,12 +2268,35 @@ function setupFestivalFireworks({
         }
         if (f.desc) html += `<p class="fi-desc">${f.desc}</p>`;
         entry.innerHTML = html;
-        entry.addEventListener("click", () => showFestivalInfo(f));
+        entry.addEventListener("click", () => showFestivalInfo(f, { zoom: true }));
         listEl.appendChild(entry);
       }
 
       listEl.style.display = "";
       festivalInfoEl.style.display = "";
+    }
+
+    // Filter out festivals that have already ended
+    function filterPastEvents(results) {
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      return results.filter(f => {
+        if (!f.start && !f.end) return true;
+        const start = parseLocalDate(f.start);
+        let end = f.end ? parseLocalDate(f.end) : start;
+        // Handle cross-year festivals (end < start → end is next year)
+        if (end < start) end = new Date(end.getFullYear() + 1, end.getMonth(), end.getDate());
+        return end >= now;
+      });
+    }
+
+    // Sort festivals by start date ascending (soonest first)
+    function sortBySoonest(results) {
+      return results.slice().sort((a, b) => {
+        const aDate = a.start ? parseLocalDate(a.start).getTime() : Infinity;
+        const bDate = b.start ? parseLocalDate(b.start).getTime() : Infinity;
+        return aDate - bDate;
+      });
     }
 
     // Filter results by current slider position (only for location/category-only queries)
@@ -2010,8 +2310,8 @@ function setupFestivalFireworks({
       return results.filter(f => {
         if (!f.start) return true;
         const jan1 = new Date(2026, 0, 1);
-        const fStart = new Date(f.start);
-        const fEnd = f.end ? new Date(f.end) : fStart;
+        const fStart = parseLocalDate(f.start);
+        const fEnd = f.end ? parseLocalDate(f.end) : fStart;
         const fStartCal = Math.max(0, Math.min(364, Math.round((fStart - jan1) / 86400000)));
         const fEndCal = Math.max(0, Math.min(364, Math.round((fEnd - jan1) / 86400000)));
         // Festival active during slider window
@@ -2022,17 +2322,28 @@ function setupFestivalFireworks({
     // Expose displaySearchResults for category toggle / slider re-filter
     _showSearchResults = () => {
       if (!searchActive || !currentSearchQuery) return;
+      const parsed = currentSearchQuery;
       const festivals = getFestivals();
       if (!festivals) return;
       // Re-run search (categories may have changed)
-      let results = searchFestivals(festivals, currentSearchQuery);
+      let results = searchFestivals(festivals, parsed);
       // Apply confidence filter
       if (results.length > 5) {
         results = results.filter(f => (f.qi || 0) >= 30);
       }
-      // Filter by slider date when search has no date criteria
-      results = filterBySliderDate(results);
-      // Apply category filter if a vertical is selected
+      // For location queries, filter out past events but show ALL future results
+      if (parsed._locationQuery) {
+        const future = filterPastEvents(results);
+        if (future.length > 0) {
+          results = sortBySoonest(future);
+        } else {
+          results._allPast = true;
+        }
+      } else {
+        // Non-location queries: filter by slider date
+        results = filterBySliderDate(results);
+      }
+      // Filter by category if user has a category active during search
       if (enabledCategories.size > 0) {
         results = results.filter(passesCategoryFilter);
       }
@@ -2043,10 +2354,11 @@ function setupFestivalFireworks({
     };
 
     function exitSearch() {
+      zoomOutFromDetail();
       searchActive = false;
       searchResults = [];
       currentSearchQuery = null;
-      _showSearchResults = null;
+      // NOTE: keep _showSearchResults alive — it checks searchActive at runtime
 
       // Clear search results from fireworks system
       setFireworksSearchResults(null);
@@ -2110,29 +2422,54 @@ function setupFestivalFireworks({
       return Math.max(0, Math.min(364, diff));
     }
 
+    // Parse a date string like "2026-05-14" into local time (avoids UTC→local timezone shift)
+    function parseLocalDate(s) {
+      if (!s) return new Date(NaN);
+      const parts = s.split("-").map(Number);
+      return new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1);
+    }
+
     // Move slider to show the date range of search results (for name-based searches)
     function moveSliderToResults(results) {
       const jan1 = new Date(2026, 0, 1);
-      let minStart = Infinity, maxEnd = -Infinity;
-      // Use top result (highest scored) to determine date range
-      const top = results[0];
-      if (!top?.start) return;
-      const fStart = new Date(top.start);
-      const fEnd = top.end ? new Date(top.end) : fStart;
-      minStart = Math.max(0, Math.round((fStart - jan1) / 86400000));
-      maxEnd = Math.max(0, Math.min(364, Math.round((fEnd - jan1) / 86400000)));
+      const now = new Date();
+      const todayCal = Math.max(0, Math.min(364, Math.round((now - jan1) / 86400000)));
 
-      if (minStart > 364) minStart = 0; // clamp cross-year
-      if (maxEnd < minStart) { maxEnd = minStart; }
-
-      if (maxEnd > minStart + 1) {
-        animateSliderTo(minStart);
-        activateRange(minStart, maxEnd);
-        if (fireworksEnabled) updateLabels();
-      } else {
-        deactivateRange();
-        animateSliderTo(minStart);
+      // Find nearest future festival (or currently active)
+      let best = null, bestDist = Infinity;
+      for (const f of results) {
+        if (!f.start) continue;
+        const fStart = parseLocalDate(f.start);
+        const fEnd = f.end ? parseLocalDate(f.end) : fStart;
+        const fSCal = Math.max(0, Math.min(364, Math.round((fStart - jan1) / 86400000)));
+        const fECal = Math.max(0, Math.min(364, Math.round((fEnd - jan1) / 86400000)));
+        // Currently active (today falls within festival dates)
+        if (todayCal >= fSCal && todayCal <= fECal) {
+          best = { start: fSCal, end: fECal, dist: 0 };
+          break;
+        }
+        // Only consider future festivals
+        if (fSCal >= todayCal) {
+          const dist = fSCal - todayCal;
+          if (dist < bestDist) { bestDist = dist; best = { start: fSCal, end: fECal, dist }; }
+        }
       }
+      // Fallback: if no future festivals, use top result
+      if (!best) {
+        const top = results[0];
+        if (!top?.start) return;
+        const fStart = parseLocalDate(top.start);
+        const fEnd = top.end ? parseLocalDate(top.end) : fStart;
+        best = {
+          start: Math.max(0, Math.round((fStart - jan1) / 86400000)),
+          end: Math.max(0, Math.min(364, Math.round((fEnd - jan1) / 86400000))),
+        };
+      }
+
+      if (best.start > 364) best.start = 0;
+
+      deactivateRange();
+      animateSliderTo(best.start);
     }
 
     function updateSliderFromSearch(parsed) {
@@ -2147,15 +2484,24 @@ function setupFestivalFireworks({
           : startDate;
         // Handle year-wrapping date ranges (e.g. winter: Dec 1 → Feb 28)
         if (startDate > endDate) {
-          // Show the early-year portion on slider (Jan → end month)
-          // but keep the full wrapping range for fireworks
-          const sliderStartCalDay = 0; // Jan 1
-          const sliderEndCalDay = dateToCalDay(endDate);
-          animateSliderTo(sliderStartCalDay);
-          activateRange(sliderStartCalDay, sliderEndCalDay);
-          // Override fireworks range to include Dec too (wrapping)
-          const startDoy = dateToCalDay(startDate);
-          setFireworksDayRange(startDoy, sliderEndCalDay);
+          const now = new Date();
+          const earlyEndDate = new Date(endDate); // e.g. Feb 28
+          const lateStartDate = new Date(startDate); // e.g. Dec 1
+          if (now > earlyEndDate) {
+            // Early portion is past — show late-year portion (e.g. Dec)
+            const sCalDay = dateToCalDay(lateStartDate);
+            const eCalDay = dateToCalDay(new Date(2026, 11, 31));
+            animateSliderTo(sCalDay);
+            activateRange(sCalDay, eCalDay);
+            setFireworksDayRange(sCalDay, dateToCalDay(earlyEndDate));
+          } else {
+            // Still in early portion — show Jan → end month
+            const sliderStartCalDay = 0;
+            const sliderEndCalDay = dateToCalDay(earlyEndDate);
+            animateSliderTo(sliderStartCalDay);
+            activateRange(sliderStartCalDay, sliderEndCalDay);
+            setFireworksDayRange(dateToCalDay(lateStartDate), sliderEndCalDay);
+          }
           if (fireworksEnabled) updateLabels();
           return;
         }
@@ -2164,19 +2510,31 @@ function setupFestivalFireworks({
         // Check for wrapping months (e.g. [0, 1, 11] for winter)
         const hasWrap = months.includes(11) && months.includes(0);
         if (hasWrap) {
-          // Show the early-year portion on slider
           const earlyMonths = months.filter(m => m < 6);
           const lateMonths = months.filter(m => m >= 6);
           const earlyEnd = earlyMonths.length > 0 ? Math.max(...earlyMonths) : 1;
-          startDate = new Date(2026, 0, 1);
-          endDate = new Date(2026, earlyEnd + 1, 0);
-          const sliderStartCalDay = dateToCalDay(startDate);
-          const sliderEndCalDay = dateToCalDay(endDate);
-          animateSliderTo(sliderStartCalDay);
-          activateRange(sliderStartCalDay, sliderEndCalDay);
-          // For fireworks, include Dec too
-          const decStart = new Date(2026, Math.min(...lateMonths), 1);
-          setFireworksDayRange(dateToCalDay(decStart), sliderEndCalDay);
+          const earlyEndDate = new Date(2026, earlyEnd + 1, 0);
+          const now = new Date();
+          if (now > earlyEndDate) {
+            // Early months are past — show late-year portion (e.g. Dec)
+            const lateStart = new Date(2026, Math.min(...lateMonths), 1);
+            const lateEnd = new Date(2026, Math.max(...lateMonths) + 1, 0);
+            const sCalDay = dateToCalDay(lateStart);
+            const eCalDay = dateToCalDay(lateEnd);
+            animateSliderTo(sCalDay);
+            activateRange(sCalDay, eCalDay);
+            setFireworksDayRange(sCalDay, dateToCalDay(earlyEndDate));
+          } else {
+            // Still in early months — show Jan → end of early portion
+            startDate = new Date(2026, 0, 1);
+            endDate = earlyEndDate;
+            const sCalDay = dateToCalDay(startDate);
+            const eCalDay = dateToCalDay(endDate);
+            animateSliderTo(sCalDay);
+            activateRange(sCalDay, eCalDay);
+            const decStart = new Date(2026, Math.min(...lateMonths), 1);
+            setFireworksDayRange(dateToCalDay(decStart), eCalDay);
+          }
           if (fireworksEnabled) updateLabels();
           return;
         }
