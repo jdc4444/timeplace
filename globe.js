@@ -770,21 +770,6 @@ async function boot() {
 
   controls.addEventListener("start", () => {
     freezeAutoSpinUntil = performance.now() + 2300;
-    // User took manual control — clear saved zoom state and smoothly reset globe tilt
-    preDetailZoom = null;
-    preDetailTilt = null;
-    // Smoothly decay globe tilt back to 0 so snapping works from a clean base
-    const startTilt = globeGroup.rotation.x;
-    if (Math.abs(startTilt) > 0.01) {
-      const tiltStart = performance.now();
-      const tiltDuration = 600;
-      function resetTilt(now) {
-        const t = Math.min(1, (now - tiltStart) / tiltDuration);
-        globeGroup.rotation.x = startTilt * (1 - t * t); // ease-in quad
-        if (t < 1) requestAnimationFrame(resetTilt);
-      }
-      requestAnimationFrame(resetTilt);
-    }
   });
 
   const resize = () => {
@@ -1379,8 +1364,18 @@ function setupFestivalFireworks({
         document.querySelectorAll(".cat-toggle").forEach(b => {
           b.classList.toggle("is-on", enabledCategories.has(b.dataset.cat));
         });
-        // Zoom out if we were in detail view
+        // Leave detail view: zoom out, clear single-festival filter, hide detail elements
         zoomOutFromDetail();
+        setFireworksSearchResults(null);
+        // Hide detail elements so list can replace them
+        if (festivalInfoNameEl) { festivalInfoNameEl.textContent = ""; festivalInfoNameEl.style.display = "none"; festivalInfoNameEl.onclick = null; festivalInfoNameEl.style.cursor = ""; }
+        if (festivalInfoLocationEl) { festivalInfoLocationEl.textContent = ""; festivalInfoLocationEl.style.display = "none"; }
+        if (festivalInfoDateEl) { festivalInfoDateEl.textContent = ""; festivalInfoDateEl.style.display = "none"; }
+        if (festivalInfoTagsEl) { festivalInfoTagsEl.innerHTML = ""; festivalInfoTagsEl.style.display = "none"; }
+        if (festivalInfoDescEl) { festivalInfoDescEl.textContent = ""; festivalInfoDescEl.style.display = "none"; }
+        if (festivalInfoDetailsEl) { festivalInfoDetailsEl.textContent = ""; festivalInfoDetailsEl.style.display = "none"; }
+        const statsEl2 = festivalInfoEl?.querySelector(".fi-stats");
+        if (statsEl2) statsEl2.style.display = "none";
         // Refresh the list
         updateLabels();
         if (searchActive && _showSearchResults) {
@@ -1608,33 +1603,86 @@ function setupFestivalFireworks({
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
+  // Compute canonical camera + globe state for a given lat/lng.
+  // Camera always ends on the equatorial plane; globe rotation is absolute.
+  // Slight camera elevation so the default view favours the northern hemisphere
+  const CAM_ELEVATION = 0.15;
+
+  function canonicalTarget(lat, lng, dist, { tiltScale = 1, lngOffset = 0, elevation = CAM_ELEVATION } = {}) {
+    // Globe rotation: absolute values that always produce the same view for a given lat/lng
+    const targetRotY = -lng * Math.PI / 180 - Math.PI / 2 - lngOffset * Math.PI / 180;
+    const targetRotX = lat * Math.PI / 180 * tiltScale;
+    // Camera: slightly above equatorial plane
+    const targetCamPos = new THREE.Vector3(0, elevation, dist);
+    return { targetRotY, targetRotX, targetCamPos };
+  }
+
+  // Swing camera along a spherical arc with a subtle elevation bump
+  // Bump scales with angular distance — small moves stay flat, big moves get lift
+  function swingCamera(startPos, targetPos, t, swingHeight = 0.15) {
+    const startDir = startPos.clone().normalize();
+    const targetDir = targetPos.clone().normalize();
+    const startDist = startPos.length();
+    const targetDist = targetPos.length();
+    // Slerp direction (arc around the globe)
+    const dir = new THREE.Vector3();
+    const dot = Math.max(-1, Math.min(1, startDir.dot(targetDir)));
+    const omega = Math.acos(dot);
+    if (omega < 0.001) {
+      // Nearly same direction — just lerp
+      dir.lerpVectors(startDir, targetDir, t);
+    } else {
+      const sinO = Math.sin(omega);
+      const a = Math.sin((1 - t) * omega) / sinO;
+      const b = Math.sin(t * omega) / sinO;
+      dir.copy(startDir).multiplyScalar(a).addScaledVector(targetDir, b);
+    }
+    dir.normalize();
+    // Lerp distance
+    const dist = startDist + (targetDist - startDist) * t;
+    // Scale bump by angular distance: tiny for nearby points, full for far apart
+    const angularScale = Math.min(1, omega / 1.2); // ramp up over ~70°
+    const bump = Math.sin(t * Math.PI) * swingHeight * angularScale * dist;
+    const pos = dir.multiplyScalar(dist);
+    pos.y += bump;
+    return pos;
+  }
+
   function rotateToResults(results) {
     if (results.length === 0) return;
+    const id = ++zoomAnimId;
+    _zoomAnimating = true;
     const n = Math.min(results.length, 20);
     let sumLng = 0, sumLat = 0;
     for (let i = 0; i < n; i++) { sumLng += results[i].lng; sumLat += results[i].lat; }
     const centLng = sumLng / n;
     const centLat = sumLat / n;
-    const cameraAzimuth = Math.atan2(camera.position.x, camera.position.z);
-    const targetRotY = -centLng * Math.PI / 180 - Math.PI / 2 + cameraAzimuth;
+    const dist = camera.position.length();
+    const tiltScale = dist > 5 ? 0.4 : 0.7;
+    const { targetRotY, targetRotX, targetCamPos } = canonicalTarget(centLat, centLng, dist, { tiltScale });
     const startRotY = globeGroup.rotation.y;
-    const duration = 1200;
+    const startRotX = globeGroup.rotation.x;
+    const startCamPos = camera.position.clone();
+    const duration = 1400;
     const startTime = performance.now();
     let deltaY = targetRotY - startRotY;
     deltaY = ((deltaY + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-    // Tilt to average latitude (gentler than zoomToFestival — scale down for zoomed-out view)
-    const dist = camera.position.length();
-    const tiltScale = dist > 5 ? 0.4 : 0.7; // less tilt when zoomed out
-    const targetRotX = centLat * Math.PI / 180 * tiltScale;
-    const startRotX = globeGroup.rotation.x;
     const deltaX = targetRotX - startRotX;
     freezeAutoSpinUntil = performance.now() + duration + 2000;
     function step(now) {
+      if (id !== zoomAnimId) { _zoomAnimating = false; controls.clearDamping(); return; }
       const t = Math.min(1, (now - startTime) / duration);
-      const eased = easeOutQuint(t);
+      const eased = easeInOutCubic(t);
       globeGroup.rotation.y = startRotY + deltaY * eased;
       globeGroup.rotation.x = startRotX + deltaX * eased;
-      if (t < 1) requestAnimationFrame(step);
+      camera.position.copy(swingCamera(startCamPos, targetCamPos, eased, 0.06));
+      camera.lookAt(0, 0, 0);
+      if (t < 1) {
+        requestAnimationFrame(step);
+      } else {
+        _zoomAnimating = false;
+        controls.clearDamping();
+      }
     }
     requestAnimationFrame(step);
   }
@@ -1644,11 +1692,38 @@ function setupFestivalFireworks({
   let preDetailTilt = null; // saved globe rotation.x before zoom-in
   let zoomAnimId = 0;       // cancellation token for zoom animation
 
-  // Easing: fast start, long gentle deceleration — feels like a camera settling
-  function easeOutQuint(t) { return 1 - Math.pow(1 - t, 5); }
+  // Easing: gentle start, long gentle deceleration — smooth cinematic feel
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
   // Easing: gentle start, gentle end — smooth departure
   function easeInOutQuart(t) {
     return t < 0.5 ? 8 * t * t * t * t : 1 - Math.pow(-2 * t + 2, 4) / 2;
+  }
+
+  // Smoothly reset globe tilt and camera to equatorial plane
+  function straightenGlobe(duration = 1200) {
+    const cameraPolar = Math.atan2(camera.position.y,
+      Math.sqrt(camera.position.x * camera.position.x + camera.position.z * camera.position.z));
+    if (Math.abs(globeGroup.rotation.x) < 0.01 && Math.abs(cameraPolar) < 0.01) return;
+    const startRotX = globeGroup.rotation.x;
+    const startDir = camera.position.clone().normalize();
+    const dist = camera.position.length();
+    const flatDir = new THREE.Vector3(startDir.x, 0, startDir.z);
+    const flatLen = flatDir.length();
+    const targetDir = flatLen > 0.01 ? flatDir.normalize() : new THREE.Vector3(0, 0, 1);
+    const startTime = performance.now();
+    freezeAutoSpinUntil = performance.now() + duration + 1000;
+    function step(now) {
+      const t = Math.min(1, (now - startTime) / duration);
+      const e = easeOutQuint(t);
+      globeGroup.rotation.x = startRotX * (1 - e);
+      const dir = new THREE.Vector3().lerpVectors(startDir, targetDir, e).normalize();
+      camera.position.copy(dir.multiplyScalar(dist));
+      camera.lookAt(0, 0, 0);
+      if (t < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
   }
 
   function zoomToFestival(festival) {
@@ -1656,54 +1731,50 @@ function setupFestivalFireworks({
     const id = ++zoomAnimId;
     _zoomAnimating = true;
 
-    // Save current distance and tilt so we can restore on exit
+    // Save current distance so we can restore on exit
     const startDist = camera.position.length();
     if (!preDetailZoom) preDetailZoom = startDist;
-    if (preDetailTilt == null) preDetailTilt = globeGroup.rotation.x;
+    preDetailTilt = null; // zoom-out always resets to 0
 
     const mobile = window.matchMedia("(max-width: 640px)").matches;
     const targetDist = mobile ? 4.2 : 3.8;
-    const duration = 1800;
-    const startTime = performance.now();
+    const lngOffset = mobile ? 6 : 10;
 
-    // Globe rotation — offset longitude slightly so the city drifts across screen
-    const offsetDeg = mobile ? 6 : 10;
-    const centLng = festival.lng + offsetDeg;
-    const cameraAzimuth = Math.atan2(camera.position.x, camera.position.z);
-    const targetRotY = -centLng * Math.PI / 180 - Math.PI / 2 + cameraAzimuth;
+    // Deterministic target: same festival always produces same final state
+    const { targetRotY, targetRotX, targetCamPos } =
+      canonicalTarget(festival.lat, festival.lng, targetDist, { lngOffset });
     const startRotY = globeGroup.rotation.y;
+    const startRotX = globeGroup.rotation.x;
+    const startCamPos = camera.position.clone();
     let deltaY = targetRotY - startRotY;
     deltaY = ((deltaY + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-
-    // Tilt globe for latitude — use actual latitude in radians
-    const targetRotX = festival.lat * Math.PI / 180;
-    const startRotX = globeGroup.rotation.x;
     const deltaX = targetRotX - startRotX;
 
-    // Capture initial camera direction so it stays stable through animation
-    const startDir = camera.position.clone().normalize();
+    // Scale duration by travel distance — nearby points animate faster
+    const angularDist = Math.sqrt(deltaY * deltaY + deltaX * deltaX);
+    const duration = Math.round(800 + Math.min(1, angularDist / 2.5) * 1000);
+    const startTime = performance.now();
 
     freezeAutoSpinUntil = performance.now() + duration + 4000;
 
     function step(now) {
-      if (id !== zoomAnimId) { _zoomAnimating = false; return; }
+      if (id !== zoomAnimId) { _zoomAnimating = false; controls.clearDamping(); return; }
       const t = Math.min(1, (now - startTime) / duration);
-      // Use easeOutQuint for the "landing" — fast approach, long gentle settle
-      const e = easeOutQuint(t);
+      const e = easeInOutCubic(t);
 
-      // Zoom camera along its original direction (stable, no drift from controls)
-      const dist = startDist + (targetDist - startDist) * e;
-      camera.position.copy(startDir.clone().multiplyScalar(dist));
+      // Swing camera along gentle arc to canonical equatorial position
+      camera.position.copy(swingCamera(startCamPos, targetCamPos, e, 0.08));
+      camera.lookAt(0, 0, 0);
 
-      // Rotate globe — use slightly faster easing so rotation leads the zoom
-      const eRot = easeOutQuint(Math.min(1, t * 1.15));
-      globeGroup.rotation.y = startRotY + deltaY * eRot;
-      globeGroup.rotation.x = startRotX + deltaX * eRot;
+      // Rotate globe in sync with camera
+      globeGroup.rotation.y = startRotY + deltaY * e;
+      globeGroup.rotation.x = startRotX + deltaX * e;
 
       if (t < 1) {
         requestAnimationFrame(step);
       } else {
         _zoomAnimating = false;
+        controls.clearDamping();
       }
     }
     requestAnimationFrame(step);
@@ -1727,25 +1798,27 @@ function setupFestivalFireworks({
     _zoomAnimating = true;
 
     const startRotX = globeGroup.rotation.x;
-    // Restore tilt to what it was before zoom-in, or keep current if no saved tilt
-    const targetRotX = preDetailTilt != null ? preDetailTilt : startRotX;
-    const duration = 1400;
+    const targetRotX = 0; // Always reset tilt on zoom out
+    const duration = 1600;
     const startTime = performance.now();
 
-    const startDir = camera.position.clone().normalize();
+    const startCamPos = camera.position.clone();
+    // Camera slightly above equator (northern bias), unless coming from southern hemisphere
+    const elev = startRotX < -0.05 ? 0 : CAM_ELEVATION;
+    const targetCamPos = new THREE.Vector3(0, elev, targetDist);
 
     freezeAutoSpinUntil = performance.now() + duration + 2000;
     preDetailZoom = null;
     preDetailTilt = null;
 
     function step(now) {
-      if (id !== zoomAnimId) { _zoomAnimating = false; return; }
+      if (id !== zoomAnimId) { _zoomAnimating = false; controls.clearDamping(); return; }
       const t = Math.min(1, (now - startTime) / duration);
       // Smooth departure — gentle in and out
-      const e = easeInOutQuart(t);
+      const e = easeInOutCubic(t);
 
-      const dist = startDist + (targetDist - startDist) * e;
-      camera.position.copy(startDir.clone().multiplyScalar(dist));
+      camera.position.copy(swingCamera(startCamPos, targetCamPos, e, 0.06));
+      camera.lookAt(0, 0, 0);
 
       globeGroup.rotation.x = startRotX + (targetRotX - startRotX) * e;
 
@@ -1753,6 +1826,7 @@ function setupFestivalFireworks({
         requestAnimationFrame(step);
       } else {
         _zoomAnimating = false;
+        controls.clearDamping();
       }
     }
     requestAnimationFrame(step);
@@ -1855,7 +1929,19 @@ function setupFestivalFireworks({
     festivalInfoEl.style.display = "";
   }
 
+  // Track pointer down position to distinguish clicks from drags
+  let _pointerDownPos = null;
+  renderer.domElement.addEventListener("pointerdown", (e) => {
+    _pointerDownPos = { x: e.clientX, y: e.clientY };
+  });
   renderer.domElement.addEventListener("click", (e) => {
+    // Ignore drags — only respond to actual clicks (< 8px movement)
+    if (_pointerDownPos) {
+      const dx = e.clientX - _pointerDownPos.x;
+      const dy = e.clientY - _pointerDownPos.y;
+      if (dx * dx + dy * dy > 64) { _pointerDownPos = null; return; }
+    }
+    _pointerDownPos = null;
     if (!fireworksEnabled || !getFireworksPoints()) return;
     const rect = renderer.domElement.getBoundingClientRect();
     pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -2206,6 +2292,8 @@ function setupFestivalFireworks({
       // Rotate globe to results centroid — only for location-based queries
       if (results.length > 0 && hasPlace) {
         rotateToResults(results);
+      } else {
+        straightenGlobe();
       }
 
       // Display results

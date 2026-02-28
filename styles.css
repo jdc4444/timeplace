@@ -12,24 +12,25 @@
 html,
 body {
   width: 100%;
-  height: 100vh;
-  height: 100dvh;
+  height: 100%;
   margin: 0;
+  padding: 0;
   overflow: hidden;
+  /* Solid fallback seen behind iOS chrome (status bar uses theme-color meta) */
+  background-color: var(--bg-mid);
 }
 
 body {
-  overflow: hidden;
   font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
-  background:
-    radial-gradient(88rem 54rem at 18% -8%, rgba(255, 255, 255, 0.42), transparent 64%),
-    radial-gradient(72rem 52rem at 82% 10%, rgba(226, 234, 247, 0.26), transparent 68%),
-    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-mid) 58%, var(--bg-bot) 100%);
 }
 
 .viewport {
   position: fixed;
   inset: 0;
+  background:
+    radial-gradient(88rem 54rem at 18% -8%, rgba(255, 255, 255, 0.42), transparent 64%),
+    radial-gradient(72rem 52rem at 82% 10%, rgba(226, 234, 247, 0.26), transparent 68%),
+    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-mid) 58%, var(--bg-bot) 100%);
 }
 
 .viewport::before {
@@ -606,16 +607,17 @@ body {
     font-size: 0.76rem;
   }
 
-  /* Title: centered on mobile, slightly larger */
+  /* Title: centered on mobile, offset by safe area */
   .site-title {
+    top: calc(env(safe-area-inset-top, 0px) + clamp(10px, 2vh, 30px));
     left: 50%;
     transform: translateX(-50%);
     font-size: 0.78rem;
   }
 
-  /* Search bar: subtle underline, balanced type size */
+  /* Search bar: subtle underline, offset by safe area */
   .search-container {
-    top: calc(clamp(20px, 4vh, 50px) + 1.6rem);
+    top: calc(env(safe-area-inset-top, 0px) + clamp(10px, 2vh, 30px) + 1.6rem);
     left: 16px;
     right: 16px;
     transform: none;
@@ -638,7 +640,7 @@ body {
 
   /* Filters: more space below search, full-width buttons */
   .super-filters {
-    top: calc(clamp(20px, 4vh, 50px) + 4.8rem);
+    top: calc(env(safe-area-inset-top, 0px) + clamp(10px, 2vh, 30px) + 4.8rem);
     left: 16px;
     right: 16px;
     transform: none;

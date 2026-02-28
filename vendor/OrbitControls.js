@@ -168,6 +168,11 @@ class OrbitControls extends EventDispatcher {
 
 		};
 
+		// Clear residual damping momentum (call after suppressing update during animations)
+		this.clearDamping = function () {
+			sphericalDelta.set( 0, 0, 0 );
+		};
+
 		// this method is exposed, but perhaps it would be better if we can make it private...
 		this.update = function () {
 
