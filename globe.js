@@ -2172,24 +2172,31 @@ function setupFestivalFireworks({
             refDate = new Date();
           }
           const refCal = Math.max(0, Math.min(364, Math.round((refDate - jan1) / 86400000)));
-          // Check if any event is active on the reference day
-          const hasActiveOnRef = future.some(f => {
-            if (!f.start) return false;
-            const fS = parseLocalDate(f.start);
-            const fE = f.end ? parseLocalDate(f.end) : fS;
-            const fSCal = Math.max(0, Math.min(364, Math.round((fS - jan1) / 86400000)));
-            const fECal = Math.max(0, Math.min(364, Math.round((fE - jan1) / 86400000)));
-            return fSCal <= refCal && fECal >= refCal;
-          });
-          if (hasActiveOnRef) {
-            // Event active on ref day — keep score ranking, snap slider there
-            results = future;
-            animateSliderTo(refCal);
-          } else {
-            // No event on ref day — sort by soonest, move slider to nearest
+          if (hasTimeKeyword) {
+            // Time keyword ("soon", "whenever", "this year", etc.) → show all, soonest first
             results = sortBySoonest(future);
             parsed._soonest = true;
             moveSliderToResults(results);
+          } else {
+            // Plain location — filter to events active on reference day
+            const activeOnRef = future.filter(f => {
+              if (!f.start) return false;
+              const fS = parseLocalDate(f.start);
+              const fE = f.end ? parseLocalDate(f.end) : fS;
+              const fSCal = Math.max(0, Math.min(364, Math.round((fS - jan1) / 86400000)));
+              const fECal = Math.max(0, Math.min(364, Math.round((fE - jan1) / 86400000)));
+              return fSCal <= refCal && fECal >= refCal;
+            });
+            if (activeOnRef.length > 0) {
+              // Events active on ref day — show those, snap slider there
+              results = activeOnRef;
+              animateSliderTo(refCal);
+            } else {
+              // No event on ref day — sort by soonest, move slider to nearest
+              results = sortBySoonest(future);
+              parsed._soonest = true;
+              moveSliderToResults(results);
+            }
           }
         } else {
           results._allPast = true;
@@ -2531,9 +2538,9 @@ function setupFestivalFireworks({
         const fEnd = f.end ? parseLocalDate(f.end) : fStart;
         const fSCal = Math.max(0, Math.min(364, Math.round((fStart - jan1) / 86400000)));
         const fECal = Math.max(0, Math.min(364, Math.round((fEnd - jan1) / 86400000)));
-        // Currently active (today falls within festival dates)
+        // Currently active (today falls within festival dates) — snap to today
         if (todayCal >= fSCal && todayCal <= fECal) {
-          best = { start: fSCal, end: fECal, dist: 0 };
+          best = { start: todayCal, end: fECal, dist: 0 };
           break;
         }
         // Only consider future festivals
